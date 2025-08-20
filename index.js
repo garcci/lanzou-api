@@ -1,5 +1,6 @@
 const express = require('express');
 const app = express();
+
 const LANZOU_DOMAIN = "lanzoux.com";
 
 // 统一的请求头
@@ -16,11 +17,8 @@ const COMMON_HEADERS = {
     'Cookie': "down_ip=1; expires=Sat, 16-Nov-2090 11:42:54 GMT; path=/; domain=.baidupan.com",
 };
 
-// 路由处理函数
-app.get('/', requestHandler);
-
 // GET请求函数
-async function getRequest(fileId) {
+async function getRequest(url) {
     const headers = {...COMMON_HEADERS};
 
     const requestOptions = {
@@ -30,7 +28,7 @@ async function getRequest(fileId) {
     };
 
     try {
-        const response = await fetch(`https://${LANZOU_DOMAIN}/${fileId}`, requestOptions);
+        const response = await fetch(url, requestOptions);
         if (!response.ok) {
             return null;
         }
@@ -72,9 +70,9 @@ async function postRequest(url, data) {
 }
 
 // 提取signValue的函数
-async function extractSignAndFileId(fileId, res) {
+async function extractSignAndFileId(fileId) {
     try {
-        const htmlContent = await getRequest(fileId);
+        const htmlContent = await getRequest(`https://${LANZOU_DOMAIN}/${fileId}`);
         if (htmlContent.includes('sign') && htmlContent.includes('/ajaxm.php?file=')) {
             const signMatches = htmlContent.match(/'sign':'([^']+)'/g);
             if (!signMatches || signMatches.length < 2) {
@@ -93,20 +91,8 @@ async function extractSignAndFileId(fileId, res) {
             const fnMatch = htmlContent.match(/src="\/fn\?([^"]+)"/);
             if (fnMatch && fnMatch[1]) {
                 const fn = fnMatch[1];
-                const headers = {...COMMON_HEADERS};
-
-                const requestOptions = {
-                    method: 'GET',
-                    headers: headers,
-                    redirect: 'follow'
-                };
-
                 try {
-                    const response = await fetch(`https://${LANZOU_DOMAIN}/fn?${fn}`, requestOptions);
-                    if (!response.ok) {
-                        return null;
-                    }
-                    const fnContent = await response.text();
+                    const fnContent = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
                     if (fnContent.includes('wp_sign') && fnContent.includes('/ajaxm.php?file=')) {
                         const fileMatchs = fnContent.match(/\/ajaxm\.php\?file=(\d+)/g);
                         if (!fileMatchs || fileMatchs.length < 2) {
@@ -135,8 +121,9 @@ async function extractSignAndFileId(fileId, res) {
 
                             if (resultObj && resultObj.url) {
                                 const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
-                                // 重定向到下载链接
-                                return res.redirect(downloadUrl);
+                                return {
+                                    redirect: downloadUrl
+                                };
                             }
                         }
                     }
@@ -154,8 +141,18 @@ async function extractSignAndFileId(fileId, res) {
 }
 
 // 请求处理函数
-async function requestHandler(req, res) {
-    const {id, pwd} = req.query;
+// 替换原有的路由定义（从144行开始的部分）
+app.get('/:id', async (req, res) => {
+    await handleDownloadRequest(req, res);
+});
+
+app.get('/:id/:pwd', async (req, res) => {
+    await handleDownloadRequest(req, res);
+});
+
+// 创建统一的处理函数
+async function handleDownloadRequest(req, res) {
+    const { id, pwd } = req.params;
 
     // 参数校验
     if (!id) {
@@ -163,16 +160,17 @@ async function requestHandler(req, res) {
     }
 
     try {
-        const signAndFileId = await extractSignAndFileId(id, res);
+        const signAndFileId = await extractSignAndFileId(id);
         if (!signAndFileId) {
-            // 如果 extractSignAndFileId 已经处理了重定向，则直接返回
-            if (res.headersSent) {
-                return;
-            }
             return res.status(404).send('Sign value not found');
         }
 
-        const {fileId, sign} = signAndFileId;
+        // 如果返回了重定向URL
+        if (signAndFileId.redirect) {
+            return res.redirect(302, signAndFileId.redirect);
+        }
+
+        const { fileId, sign } = signAndFileId;
 
         const postData = {
             action: "downprocess",
@@ -183,12 +181,19 @@ async function requestHandler(req, res) {
 
         // 处理异步请求并等待结果
         const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-        const resultObj = JSON.parse(response);
+
+        let resultObj;
+        try {
+            resultObj = JSON.parse(response);
+        } catch (parseError) {
+            console.error('Failed to parse JSON response:', response);
+            return res.status(502).send('Invalid response from upstream server');
+        }
 
         if (resultObj && resultObj.url) {
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
             // 重定向到下载链接
-            return res.redirect(downloadUrl);
+            return res.redirect(302, downloadUrl);
         }
 
         console.log("Unexpected response:", response);
@@ -198,22 +203,8 @@ async function requestHandler(req, res) {
         return res.status(500).send('Internal Server Error');
     }
 }
-
-// 服务器启动函数
-function startServer() {
-    const server = app.listen(3000, () => {
-        console.log('Server is running on port 3000');
-    });
-
-    // 优雅关闭服务器
-    process.on('SIGINT', () => {
-        console.log('Shutting down server...');
-        server.close(() => {
-            console.log('Server closed.');
-            process.exit(0);
-        });
-    });
-}
-
-// 启动服务器
-startServer();
+// Express 入口点
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+    console.log(`Server is running on port ${port}`);
+});
