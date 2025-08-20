@@ -1,3 +1,5 @@
+const express = require('express');
+const app = express();
 const LANZOU_DOMAIN = "lanzoux.com";
 
 // 统一的请求头
@@ -14,9 +16,12 @@ const COMMON_HEADERS = {
     'Cookie': "down_ip=1; expires=Sat, 16-Nov-2090 11:42:54 GMT; path=/; domain=.baidupan.com",
 };
 
+// 路由处理函数
+app.get('/', requestHandler);
+
 // GET请求函数
 async function getRequest(fileId) {
-    const headers = { ...COMMON_HEADERS };
+    const headers = {...COMMON_HEADERS};
 
     const requestOptions = {
         method: 'GET',
@@ -38,7 +43,7 @@ async function getRequest(fileId) {
 
 // POST请求函数
 async function postRequest(url, data) {
-    const headers = { ...COMMON_HEADERS };
+    const headers = {...COMMON_HEADERS};
     // 设置正确的Content-Type以配合URLSearchParams使用
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
 
@@ -67,26 +72,78 @@ async function postRequest(url, data) {
 }
 
 // 提取signValue的函数
-async function extractSignAndFileId(fileId) {
+async function extractSignAndFileId(fileId, res) {
     try {
         const htmlContent = await getRequest(fileId);
         if (htmlContent.includes('sign') && htmlContent.includes('/ajaxm.php?file=')) {
-            //前后有两个sign，要取第二个
             const signMatches = htmlContent.match(/'sign':'([^']+)'/g);
             if (!signMatches || signMatches.length < 2) {
                 return null;
             }
             const signMatch = signMatches[1].match(/'sign':'([^']+)'/);
-
-            // 从【$.ajax({
-            // 			type : 'post',
-            // 			url : '/ajaxm.php?file=249998205',】中获取249998205
             const fileMatch = htmlContent.match(/\/ajaxm\.php\?file=(\d+)/);
             if (signMatch && signMatch[1] && fileMatch && fileMatch[1]) {
                 return {
                     fileId: fileMatch[1],
                     sign: signMatch[1],
                 };
+            }
+        }
+        if (htmlContent.includes('src="/fn?')) {
+            const fnMatch = htmlContent.match(/src="\/fn\?([^"]+)"/);
+            if (fnMatch && fnMatch[1]) {
+                const fn = fnMatch[1];
+                const headers = {...COMMON_HEADERS};
+
+                const requestOptions = {
+                    method: 'GET',
+                    headers: headers,
+                    redirect: 'follow'
+                };
+
+                try {
+                    const response = await fetch(`https://${LANZOU_DOMAIN}/fn?${fn}`, requestOptions);
+                    if (!response.ok) {
+                        return null;
+                    }
+                    const fnContent = await response.text();
+                    if (fnContent.includes('wp_sign') && fnContent.includes('/ajaxm.php?file=')) {
+                        const fileMatchs = fnContent.match(/\/ajaxm\.php\?file=(\d+)/g);
+                        if (!fileMatchs || fileMatchs.length < 2) {
+                            return null;
+                        }
+                        const fileMatch = fileMatchs[1].match(/\/ajaxm\.php\?file=(\d+)/);
+                        // 有两个fileId，取第二个
+                        if (fileMatch && fileMatch[1]) {
+                            const fileId = fileMatch[1];
+                            // 从【wp_sign = 'B2ECPF1sUmMACQI9AjIFOQRsDj5QP1NgAzZaZVA_bBDEIOABxWnMGbwJlBGUGZ1VhVDgHNQNkADYKPgY2';】取出【B2ECPF1sUmMACQI9AjIFOQRsDj5QP1NgAzZaZVA_bBDEIOABxWnMGbwJlBGUGZ1VhVDgHNQNkADYKPgY2】
+                            const wp_sign = fnContent.match(/wp_sign\s*=\s*'([^']+)'/)[1];
+                            // 从【ajaxdata = 'c1Re';】中取出【c1Re】
+                            const ajaxdata = fnContent.match(/ajaxdata\s*=\s*'([^']+)'/)[1];
+                            const postData = {
+                                action: "downprocess",
+                                websignkey: ajaxdata,
+                                signs: ajaxdata,
+                                sign: wp_sign,
+                                websign: "",
+                                kd: "1",
+                                ves: "1" // 确保pwd为字符串，即使未提供
+                            };
+                            // 处理异步请求并等待结果
+                            const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
+                            const resultObj = JSON.parse(response);
+
+                            if (resultObj && resultObj.url) {
+                                const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
+                                // 重定向到下载链接
+                                return res.redirect(downloadUrl);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error in GET request:', error);
+                    return null;
+                }
             }
         }
         return null;
@@ -97,20 +154,22 @@ async function extractSignAndFileId(fileId) {
 }
 
 // 请求处理函数
-async function requestHandler(request) {
-    const url = new URL(request.url);
-    const id = url.searchParams.get('id');
-    const pwd = url.searchParams.get('pwd');
+async function requestHandler(req, res) {
+    const {id, pwd} = req.query;
 
     // 参数校验
     if (!id) {
-        return new Response('Missing required parameter: id', { status: 400 });
+        return res.status(400).send('Missing required parameter: id');
     }
 
     try {
-        const signAndFileId = await extractSignAndFileId(id);
+        const signAndFileId = await extractSignAndFileId(id, res);
         if (!signAndFileId) {
-            return new Response('Sign value not found', { status: 404 });
+            // 如果 extractSignAndFileId 已经处理了重定向，则直接返回
+            if (res.headersSent) {
+                return;
+            }
+            return res.status(404).send('Sign value not found');
         }
 
         const {fileId, sign} = signAndFileId;
@@ -129,20 +188,32 @@ async function requestHandler(request) {
         if (resultObj && resultObj.url) {
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
             // 重定向到下载链接
-            return Response.redirect(downloadUrl, 302);
+            return res.redirect(downloadUrl);
         }
 
         console.log("Unexpected response:", response);
-        return new Response('Internal Server Error', { status: 500 });
+        return res.status(500).send('Internal Server Error');
     } catch (error) {
         console.error('Error processing request:', error);
-        return new Response('Internal Server Error', { status: 500 });
+        return res.status(500).send('Internal Server Error');
     }
 }
 
-// Cloudflare Worker 入口点
-export default {
-    async fetch(request) {
-        return await requestHandler(request);
-    }
-};
+// 服务器启动函数
+function startServer() {
+    const server = app.listen(3000, () => {
+        console.log('Server is running on port 3000');
+    });
+
+    // 优雅关闭服务器
+    process.on('SIGINT', () => {
+        console.log('Shutting down server...');
+        server.close(() => {
+            console.log('Server closed.');
+            process.exit(0);
+        });
+    });
+}
+
+// 启动服务器
+startServer();
