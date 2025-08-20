@@ -208,7 +208,7 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
 const downloadCache = new Map();
 
 // 递归解析重定向URL，直到找到最终下载地址
-async function resolveFinalUrl(url, maxRedirects = 10) {
+async function resolveFinalUrl(url, maxRedirects = 2) {
     if (maxRedirects <= 0) {
         throw new Error('Maximum redirect limit reached');
     }
@@ -296,11 +296,11 @@ async function handleDownloadRequest(request) {
 
         if (resultObj && resultObj.url) {
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
-            
+
             // 递归解析重定向以获取最终下载地址
             try {
                 const finalDownloadUrl = await resolveFinalUrl(downloadUrl);
-                
+
                 if (finalDownloadUrl) {
                     // 缓存真实的下载链接
                     downloadCache.set(cacheKey, {
@@ -319,7 +319,7 @@ async function handleDownloadRequest(request) {
                 });
                 return Response.redirect(downloadUrl, 302);
             }
-            
+
             // 重定向到下载链接
             return Response.redirect(downloadUrl, 302);
         }
