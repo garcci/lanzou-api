@@ -1,5 +1,3 @@
-const express = require('express');
-const app = express();
 const LANZOU_DOMAIN = "lanzoux.com";
 
 // 统一的请求头
@@ -15,9 +13,6 @@ const COMMON_HEADERS = {
     'Upgrade-Insecure-Requests': '1',
     'Cookie': "down_ip=1; expires=Sat, 16-Nov-2090 11:42:54 GMT; path=/; domain=.baidupan.com",
 };
-
-// 路由处理函数
-app.get('/', requestHandler);
 
 // GET请求函数
 async function getRequest(fileId) {
@@ -102,18 +97,20 @@ async function extractSignAndFileId(fileId) {
 }
 
 // 请求处理函数
-async function requestHandler(req, res) {
-    const {id, pwd} = req.query;
+async function requestHandler(request) {
+    const url = new URL(request.url);
+    const id = url.searchParams.get('id');
+    const pwd = url.searchParams.get('pwd');
 
     // 参数校验
     if (!id) {
-        return res.status(400).send('Missing required parameter: id');
+        return new Response('Missing required parameter: id', { status: 400 });
     }
 
     try {
         const signAndFileId = await extractSignAndFileId(id);
         if (!signAndFileId) {
-            return res.status(404).send('Sign value not found');
+            return new Response('Sign value not found', { status: 404 });
         }
 
         const {fileId, sign} = signAndFileId;
@@ -132,32 +129,20 @@ async function requestHandler(req, res) {
         if (resultObj && resultObj.url) {
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
             // 重定向到下载链接
-            return res.redirect(downloadUrl);
+            return Response.redirect(downloadUrl, 302);
         }
 
         console.log("Unexpected response:", response);
-        return res.status(500).send('Internal Server Error');
+        return new Response('Internal Server Error', { status: 500 });
     } catch (error) {
         console.error('Error processing request:', error);
-        return res.status(500).send('Internal Server Error');
+        return new Response('Internal Server Error', { status: 500 });
     }
 }
 
-// 服务器启动函数
-function startServer() {
-    const server = app.listen(3000, () => {
-        console.log('Server is running on port 3000');
-    });
-
-    // 优雅关闭服务器
-    process.on('SIGINT', () => {
-        console.log('Shutting down server...');
-        server.close(() => {
-            console.log('Server closed.');
-            process.exit(0);
-        });
-    });
-}
-
-// 启动服务器
-startServer();
+// Cloudflare Worker 入口点
+export default {
+    async fetch(request) {
+        return await requestHandler(request);
+    }
+};
