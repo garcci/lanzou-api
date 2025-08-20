@@ -1,0 +1,18 @@
+{
+  "name": "drive-direct-link",
+  "version": "1.0.0",
+  "description": "网盘直链下载服务",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "keywords": [
+    "直链",
+    "下载"
+  ],
+  "author": "",
+  "license": "MIT"
+}
