@@ -207,6 +207,29 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
 // 创建缓存对象来存储下载链接
 const downloadCache = new Map();
 
+// 递归解析重定向URL，直到找到最终下载地址
+async function resolveFinalUrl(url, maxRedirects = 10) {
+    if (maxRedirects <= 0) {
+        throw new Error('Maximum redirect limit reached');
+    }
+
+    try {
+        const response = await getRequest(url, 0, { followRedirect: false });
+        const location = response.headers.get('location');
+
+        if (location) {
+            // 如果有重定向，递归解析
+            return await resolveFinalUrl(location, maxRedirects - 1);
+        } else {
+            // 没有更多重定向，返回当前URL
+            return url;
+        }
+    } catch (error) {
+        console.error('Error resolving final URL:', error);
+        throw error;
+    }
+}
+
 // 创建统一的处理函数
 async function handleDownloadRequest(request) {
     const url = new URL(request.url);
@@ -274,22 +297,21 @@ async function handleDownloadRequest(request) {
         if (resultObj && resultObj.url) {
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
             
-            // 请求下载链接以获取真实的下载地址
+            // 递归解析重定向以获取最终下载地址
             try {
-                const downloadResponse = await getRequest(downloadUrl, 0, { followRedirect: false });
-                const realDownloadUrl = downloadResponse.headers.get('location');
+                const finalDownloadUrl = await resolveFinalUrl(downloadUrl);
                 
-                if (realDownloadUrl) {
+                if (finalDownloadUrl) {
                     // 缓存真实的下载链接
                     downloadCache.set(cacheKey, {
                         ...resultObj,
-                        realDownloadUrl: realDownloadUrl,
+                        realDownloadUrl: finalDownloadUrl,
                         timestamp: Date.now()
                     });
-                    return Response.redirect(realDownloadUrl, 302);
+                    return Response.redirect(finalDownloadUrl, 302);
                 }
             } catch (redirectError) {
-                console.error('Error getting real download URL:', redirectError);
+                console.error('Error getting final download URL:', redirectError);
                 // 如果获取真实链接失败，仍然使用原始链接
                 downloadCache.set(cacheKey, {
                     ...resultObj,
