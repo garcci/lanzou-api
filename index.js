@@ -1,6 +1,3 @@
-const express = require('express');
-const app = express();
-
 const LANZOU_DOMAIN = "lanzoux.com";
 
 // 统一的请求头
@@ -140,34 +137,28 @@ async function extractSignAndFileId(fileId) {
     }
 }
 
-// 请求处理函数
-// 替换原有的路由定义（从144行开始的部分）
-app.get('/:id', async (req, res) => {
-    await handleDownloadRequest(req, res);
-});
-
-app.get('/:id/:pwd', async (req, res) => {
-    await handleDownloadRequest(req, res);
-});
-
 // 创建统一的处理函数
-async function handleDownloadRequest(req, res) {
-    const { id, pwd } = req.params;
+async function handleDownloadRequest(request) {
+    const url = new URL(request.url);
+    const paths = url.pathname.split('/').filter(Boolean);
+
+    const id = paths[0];
+    const pwd = paths[1] || null; // 如果没有密码，则设为null
 
     // 参数校验
     if (!id) {
-        return res.status(400).send('Missing required parameter: id');
+        return new Response('Missing required parameter: id', { status: 400 });
     }
 
     try {
         const signAndFileId = await extractSignAndFileId(id);
         if (!signAndFileId) {
-            return res.status(404).send('Sign value not found');
+            return new Response('Sign value not found', { status: 404 });
         }
 
         // 如果返回了重定向URL
         if (signAndFileId.redirect) {
-            return res.redirect(302, signAndFileId.redirect);
+            return Response.redirect(signAndFileId.redirect, 302);
         }
 
         const { fileId, sign } = signAndFileId;
@@ -187,24 +178,26 @@ async function handleDownloadRequest(req, res) {
             resultObj = JSON.parse(response);
         } catch (parseError) {
             console.error('Failed to parse JSON response:', response);
-            return res.status(502).send('Invalid response from upstream server');
+            return new Response('Invalid response from upstream server', { status: 502 });
         }
 
         if (resultObj && resultObj.url) {
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
             // 重定向到下载链接
-            return res.redirect(302, downloadUrl);
+            return Response.redirect(downloadUrl, 302);
         }
 
         console.log("Unexpected response:", response);
-        return res.status(500).send('Internal Server Error');
+        return new Response('Internal Server Error', { status: 500 });
     } catch (error) {
         console.error('Error processing request:', error);
-        return res.status(500).send('Internal Server Error');
+        return new Response('Internal Server Error', { status: 500 });
     }
 }
-// Express 入口点
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-});
+
+// Cloudflare Workers 入口点
+export default {
+    async fetch(request) {
+        return await handleDownloadRequest(request);
+    }
+};
