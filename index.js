@@ -38,21 +38,21 @@ function delay(ms) {
 }
 
 // GET请求函数（带重试机制）
-async function getRequest(url, retryCount = 0) {
+async function getRequest(url, retryCount = 0, options = {}) {
     const headers = {...COMMON_HEADERS};
 
     const requestOptions = {
         method: 'GET',
         headers: headers,
-        redirect: 'follow'
+        redirect: options.followRedirect === false ? 'manual' : 'follow'
     };
 
     try {
         const response = await fetch(url, requestOptions);
-        if (!response.ok) {
+        if (!response.ok && response.status !== 302) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-        return await response.text();
+        return response;
     } catch (error) {
         console.error(`Error in GET request (attempt ${retryCount + 1}):`, error.message);
 
@@ -65,7 +65,7 @@ async function getRequest(url, retryCount = 0) {
             console.log(`Retrying GET request in ${delayTime}ms...`);
             await delay(delayTime);
 
-            return getRequest(url, retryCount + 1);
+            return getRequest(url, retryCount + 1, options);
         }
 
         console.error('Max retries reached for GET request');
@@ -121,13 +121,14 @@ async function postRequest(url, data, retryCount = 0) {
 async function extractSignAndFileId(fileId, retryCount = 0) {
     try {
         const htmlContent = await getRequest(`https://${LANZOU_DOMAIN}/${fileId}`);
-        if (htmlContent.includes('sign') && htmlContent.includes('/ajaxm.php?file=')) {
-            const signMatches = htmlContent.match(/'sign':'([^']+)'/g);
+        const htmlText = await htmlContent.text();
+        if (htmlText.includes('sign') && htmlText.includes('/ajaxm.php?file=')) {
+            const signMatches = htmlText.match(/'sign':'([^']+)'/g);
             if (!signMatches || signMatches.length < 2) {
                 throw new Error('Sign matches not found or insufficient matches');
             }
             const signMatch = signMatches[1].match(/'sign':'([^']+)'/);
-            const fileMatch = htmlContent.match(/\/ajaxm\.php\?file=(\d+)/);
+            const fileMatch = htmlText.match(/\/ajaxm\.php\?file=(\d+)/);
             if (signMatch && signMatch[1] && fileMatch && fileMatch[1]) {
                 return {
                     fileId: fileMatch[1],
@@ -135,12 +136,13 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                 };
             }
         }
-        if (htmlContent.includes('src="/fn?')) {
-            const fnMatch = htmlContent.match(/src="\/fn\?([^"]+)"/);
+        if (htmlText.includes('src="/fn?')) {
+            const fnMatch = htmlText.match(/src="\/fn\?([^"]+)"/);
             if (fnMatch && fnMatch[1]) {
                 const fn = fnMatch[1];
                 try {
-                    const fnContent = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
+                    const fnContentResponse = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
+                    const fnContent = await fnContentResponse.text();
                     if (fnContent.includes('wp_sign') && fnContent.includes('/ajaxm.php?file=')) {
                         const fileMatchs = fnContent.match(/\/ajaxm\.php\?file=(\d+)/g);
                         if (!fileMatchs || fileMatchs.length < 2) {
@@ -226,6 +228,9 @@ async function handleDownloadRequest(request) {
         if (cachedResult.redirect) {
             return Response.redirect(cachedResult.redirect, 302);
         }
+        if (cachedResult.realDownloadUrl) {
+            return Response.redirect(cachedResult.realDownloadUrl, 302);
+        }
         const downloadUrl = cachedResult.dom + "/file/" + cachedResult.url;
         return Response.redirect(downloadUrl, 302);
     }
@@ -267,13 +272,32 @@ async function handleDownloadRequest(request) {
         }
 
         if (resultObj && resultObj.url) {
-            // 缓存结果
-            downloadCache.set(cacheKey, {
-                ...resultObj,
-                timestamp: Date.now()
-            });
-
             const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
+            
+            // 请求下载链接以获取真实的下载地址
+            try {
+                const downloadResponse = await getRequest(downloadUrl, 0, { followRedirect: false });
+                const realDownloadUrl = downloadResponse.headers.get('location');
+                
+                if (realDownloadUrl) {
+                    // 缓存真实的下载链接
+                    downloadCache.set(cacheKey, {
+                        ...resultObj,
+                        realDownloadUrl: realDownloadUrl,
+                        timestamp: Date.now()
+                    });
+                    return Response.redirect(realDownloadUrl, 302);
+                }
+            } catch (redirectError) {
+                console.error('Error getting real download URL:', redirectError);
+                // 如果获取真实链接失败，仍然使用原始链接
+                downloadCache.set(cacheKey, {
+                    ...resultObj,
+                    timestamp: Date.now()
+                });
+                return Response.redirect(downloadUrl, 302);
+            }
+            
             // 重定向到下载链接
             return Response.redirect(downloadUrl, 302);
         }
