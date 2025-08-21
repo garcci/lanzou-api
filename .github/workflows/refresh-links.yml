@@ -2,7 +2,7 @@ name: Refresh Download Links
 
 on:
   schedule:
-    # 每12分钟运行一次，减少GitHub Actions使用频率
+    # 每12分钟运行一次，与缓存刷新间隔保持一致
     - cron: '*/12 * * * *'
   workflow_dispatch: # 允许手动触发
   # 添加push事件触发，便于调试

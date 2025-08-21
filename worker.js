@@ -272,10 +272,10 @@ async function checkUrlValidity(url) {
 }
 
 // 创建缓存实例
-const CACHE_TTL = 2 * 60; // 2分钟缓存时间，确保链接始终有效
-const REFRESH_INTERVAL = 1 * 60 * 1000; // 1分钟刷新间隔
+const CACHE_TTL = 15 * 60; // 15分钟缓存时间，与下载链接失效时间一致
+const REFRESH_INTERVAL = 12 * 60 * 1000; // 12分钟刷新间隔，确保在失效前刷新
 const EXPIRE_INTERVAL = 24 * 60 * 60 * 1000; // 24小时未访问则过期
-const URGENT_REFRESH_THRESHOLD = 30 * 1000; // 30秒内即将过期的紧急刷新阈值
+const URGENT_REFRESH_THRESHOLD = 3 * 60 * 1000; // 3分钟内即将过期的紧急刷新阈值
 
 // 统一时间管理函数
 function getUnifiedTimeConfig() {
@@ -348,7 +348,15 @@ async function shouldRefreshLink(cacheKey, env) {
     try {
         // 解析简单字符串格式的时间数据
         const [access, refresh, expire, updatedAt] = timeString.split('|');
-        return Date.now() >= parseInt(refresh);
+        const now = Date.now();
+        const refreshTime = parseInt(refresh);
+        const expireTime = parseInt(expire);
+        
+        // 三种情况需要刷新：
+        // 1. 到了预定刷新时间
+        // 2. 即将过期（3分钟内）
+        // 3. 已经过期
+        return now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime || now >= expireTime;
     } catch (e) {
         console.error(`Error parsing time data for ${cacheKey}:`, e);
         return true;
@@ -393,9 +401,17 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
     if (cachedResponse) {
         console.log(`Cloudflare cache hit for ${cacheKey}`);
-        // 更新访问时间
-        ctx.waitUntil(updateAccessTime(cacheKey, env));
-        return cachedResponse;
+        // 检查是否需要刷新链接
+        const needRefresh = await shouldRefreshLink(cacheKey, env);
+        if (!needRefresh) {
+            // 不需要刷新，直接返回缓存结果
+            // 更新访问时间
+            ctx.waitUntil(updateAccessTime(cacheKey, env));
+            return cachedResponse;
+        } else {
+            console.log(`Link needs refresh for ${cacheKey}`);
+            // 需要刷新，继续执行下面的逻辑
+        }
     }
 
     // 然后尝试从KV存储中获取
@@ -404,14 +420,24 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
         if (cachedResultStr) {
             try {
                 const cachedResult = JSON.parse(cachedResultStr);
-                if (cachedResult && (Date.now() - cachedResult.timestamp) < (CACHE_TTL * 1000)) {
-                    console.log(`KV cache hit for ${cacheKey}`);
-                    // 更新访问时间
-                    ctx.waitUntil(updateAccessTime(cacheKey, env));
-                    // 更新Cloudflare缓存
-                    const response = Response.redirect(cachedResult.url, 302);
-                    ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
-                    return response;
+                // 检查是否需要刷新链接（即使在有效期内也检查链接是否仍然有效）
+                const needRefresh = await shouldRefreshLink(cacheKey, env);
+                const isUrlValid = await checkUrlValidity(cachedResult.url);
+                
+                if (!needRefresh && isUrlValid) {
+                    if (cachedResult && (Date.now() - cachedResult.timestamp) < (CACHE_TTL * 1000)) {
+                        console.log(`KV cache hit for ${cacheKey}`);
+                        // 更新访问时间
+                        ctx.waitUntil(updateAccessTime(cacheKey, env));
+                        // 更新Cloudflare缓存
+                        const response = Response.redirect(cachedResult.url, 302);
+                        ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+                        return response;
+                    }
+                } else if (!isUrlValid) {
+                    console.log(`Cached URL is no longer valid for ${cacheKey}`);
+                } else {
+                    console.log(`Link needs refresh for ${cacheKey}`);
                 }
             } catch (e) {
                 console.error(`Error parsing cached data for ${cacheKey}:`, e);
@@ -419,14 +445,9 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
         }
     }
 
-    // 缓存未命中，需要获取新的下载链接
+    // 缓存未命中或需要刷新，获取新的下载链接
     try {
-        // 并行执行sign提取和重定向解析，提高响应速度
-        const [signAndFileId, initialResponse] = await Promise.all([
-            extractSignAndFileId(id),
-            getInitialResponse(id, pwd, env)
-        ]);
-
+        const signAndFileId = await extractSignAndFileId(id);
         if (!signAndFileId) {
             return new Response('Sign value not found', {status: 404});
         }
@@ -720,7 +741,7 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const expiredItems = [];        // 已过期的项
 
         // 限制处理的键数量以提高性能
-        const maxKeysToProcess = 50; // 增加到50个键
+        const maxKeysToProcess = 100; // 增加到100个键以确保更多链接得到处理
         let processedKeys = 0;
 
         for (const key of keys.keys) {
@@ -736,6 +757,9 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         // 解析简单字符串格式的时间数据
                         const [access, refresh, expire, updatedAt] = timeString.split('|');
                         const cacheKey = key.name.replace('_time', '');
+                        const refreshTime = parseInt(refresh);
+                        const expireTime = parseInt(expire);
+                        const accessTime = parseInt(access);
 
                         // 检查是否是优先处理项
                         if (priorityCacheKey && cacheKey === priorityCacheKey) {
@@ -744,10 +768,10 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         }
 
                         // 根据刷新时间分类
-                        if (now >= parseInt(refresh)) {
+                        if (now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime) {
                             // 需要刷新
-                            if (now - parseInt(refresh) < URGENT_REFRESH_THRESHOLD) {
-                                // 紧急刷新项（已过期但时间不长）
+                            if ((now + 3 * 60 * 1000) >= expireTime) {
+                                // 紧急刷新项（3分钟内即将过期或已过期）
                                 urgentRefreshItems.push(cacheKey);
                             } else {
                                 // 正常刷新项
@@ -757,9 +781,9 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         }
                         
                         // 检查是否过期（24小时内未访问）
-                        if (now >= parseInt(expire)) {
+                        if (now >= expireTime) {
                             // 如果24小时内没有访问过，则标记为过期项
-                            if (now - parseInt(access) >= EXPIRE_INTERVAL) {
+                            if (now - accessTime >= EXPIRE_INTERVAL) {
                                 expiredItems.push(cacheKey);
                             }
                         }
