@@ -12,16 +12,22 @@ jobs:
     steps:
       - name: Call refresh API
         run: |
+          # 检查是否设置了REFRESH_URL
+          if [ -z "${{ secrets.REFRESH_URL }}" ]; then
+            echo "Error: REFRESH_URL secret is not set"
+            exit 1
+          fi
+          
           # 使用curl调用刷新接口
-          response=$(curl -s -w "%{http_code}" -X GET ${{ secrets.REFRESH_URL }})
+          response=$(curl -s -w "%{http_code}" -X GET "${{ secrets.REFRESH_URL }}")
           http_code=$(tail -c 3 <<< "$response")
           body=$(sed '$ s/...$//' <<< "$response")
           
           echo "Response body: $body"
           echo "HTTP status code: $http_code"
           
-          # 检查HTTP状态码，如果不是200则标记为失败
-          if [ "$http_code" -ne 200 ]; then
+          # 检查HTTP状态码，如果不是2xx则标记为失败
+          if [[ $http_code -lt 200 || $http_code -ge 300 ]]; then
             echo "Error: Request failed with status code $http_code"
             exit 1
           fi

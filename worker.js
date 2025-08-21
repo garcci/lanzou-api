@@ -714,7 +714,7 @@ function handleHealthRequest() {
 async function handleRefreshRequest(env) {
     try {
         // 触发链接刷新
-        const refreshResult = await checkAndRefreshLinks(env);
+        await checkAndRefreshLinks(env);
         
         const result = {
             status: 'success',
