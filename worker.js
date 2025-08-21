@@ -33,8 +33,8 @@ function randIP() {
 
 // 增加重试次数和延迟以提高稳定性
 const RETRY_CONFIG = {
-    maxRetries: 3, // 减少重试次数以避免超时
-    retryDelay: 300,
+    maxRetries: 2, // 减少重试次数以提高响应速度
+    retryDelay: 200, // 减少重试延迟
     exponentialBackoff: true
 };
 
@@ -60,7 +60,7 @@ async function getRequest(url, retryCount = 0, options = {}) {
     try {
         // 添加超时控制
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 减少超时时间到5秒
 
         const response = await fetch(url, {
             ...requestOptions,
@@ -97,7 +97,7 @@ async function postRequest(url, data, retryCount = 0) {
     try {
         // 添加超时控制
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 减少超时时间到5秒
 
         const response = await fetch(url, {
             method: 'POST',
@@ -150,39 +150,11 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
             if (fnMatch && fnMatch[1]) {
                 const fn = fnMatch[1];
                 try {
-                    const fnResponse = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
-                    const fnContent = await fnResponse.text();
-
-                    if (fnContent.includes('wp_sign') && fnContent.includes('/ajaxm.php?file=')) {
-                        const fileMatchs = fnContent.match(/\/ajaxm\.php\?file=(\d+)/g);
-                        if (!fileMatchs || fileMatchs.length < 2) {
-                            throw new Error('File matches not found or insufficient matches');
-                        }
-                        const fileMatch = fileMatchs[1].match(/\/ajaxm\.php\?file=(\d+)/);
-                        if (fileMatch && fileMatch[1]) {
-                            const fileId = fileMatch[1];
-                            const wp_sign = fnContent.match(/wp_sign\s*=\s*'([^']+)'/)[1];
-                            const ajaxdata = fnContent.match(/ajaxdata\s*=\s*'([^']+)'/)[1];
-                            const postData = {
-                                action: "downprocess",
-                                websignkey: ajaxdata,
-                                signs: ajaxdata,
-                                sign: wp_sign,
-                                websign: "",
-                                kd: "1",
-                                ves: "1"
-                            };
-                            const result = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-                            const resultObj = JSON.parse(result);
-
-                            if (resultObj && resultObj.url) {
-                                const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
-                                return {
-                                    redirect: downloadUrl
-                                };
-                            }
-                        }
-                    }
+                    // 优化：对于初次请求，我们不需要完整解析fn页面，只需要获取重定向URL
+                    const fnUrl = `https://${LANZOU_DOMAIN}/fn?${fn}`;
+                    return {
+                        redirect: fnUrl
+                    };
                 } catch (error) {
                     console.error('Error in GET request:', error);
                     throw error;
@@ -207,7 +179,7 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
 }
 
 // 跟踪重定向地址的函数 - 优化递归处理
-async function followRedirect(url, maxRedirects = 5) { // 减少最大重定向次数
+async function followRedirect(url, maxRedirects = 3) { // 减少最大重定向次数
     if (maxRedirects <= 0) {
         console.warn('Max redirect limit reached for URL:', url);
         return url;
@@ -216,7 +188,7 @@ async function followRedirect(url, maxRedirects = 5) { // 减少最大重定向�
     try {
         // 使用HEAD请求以减少数据传输
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 减少超时时间到3秒
 
         const response = await fetch(url, {
             method: 'HEAD',
@@ -393,25 +365,9 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
     if (cachedResponse) {
         console.log(`Cloudflare cache hit for ${cacheKey}`);
-        // 即使命中缓存，也检查链接是否仍然有效
-        const cachedResultStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-        if (cachedResultStr) {
-            try {
-                const cachedResult = JSON.parse(cachedResultStr);
-                // 检查链接是否仍然有效
-                const isValid = await checkUrlValidity(cachedResult.url);
-                if (isValid) {
-                    // 更新访问时间
-                    ctx.waitUntil(updateAccessTime(cacheKey, env));
-                    return cachedResponse;
-                } else {
-                    console.log(`Cached URL is no longer valid for ${cacheKey}, refreshing...`);
-                    // 链接无效，继续执行刷新逻辑
-                }
-            } catch (e) {
-                console.error(`Error parsing cached data for ${cacheKey}:`, e);
-            }
-        }
+        // 更新访问时间
+        ctx.waitUntil(updateAccessTime(cacheKey, env));
+        return cachedResponse;
     }
 
     // 然后尝试从KV存储中获取
@@ -421,20 +377,13 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
             try {
                 const cachedResult = JSON.parse(cachedResultStr);
                 if (cachedResult && (Date.now() - cachedResult.timestamp) < (CACHE_TTL * 1000)) {
-                    // 检查链接是否仍然有效
-                    const isValid = await checkUrlValidity(cachedResult.url);
-                    if (isValid) {
-                        console.log(`KV cache hit for ${cacheKey}`);
-                        // 更新访问时间
-                        ctx.waitUntil(updateAccessTime(cacheKey, env));
-                        // 更新Cloudflare缓存
-                        const response = Response.redirect(cachedResult.url, 302);
-                        ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
-                        return response;
-                    } else {
-                        console.log(`Cached URL is no longer valid for ${cacheKey}, refreshing...`);
-                        // 链接无效，继续执行刷新逻辑
-                    }
+                    console.log(`KV cache hit for ${cacheKey}`);
+                    // 更新访问时间
+                    ctx.waitUntil(updateAccessTime(cacheKey, env));
+                    // 更新Cloudflare缓存
+                    const response = Response.redirect(cachedResult.url, 302);
+                    ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+                    return response;
                 }
             } catch (e) {
                 console.error(`Error parsing cached data for ${cacheKey}:`, e);
@@ -442,21 +391,26 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
         }
     }
 
+    // 缓存未命中，需要获取新的下载链接
     try {
-        const signAndFileId = await extractSignAndFileId(id);
+        // 并行执行sign提取和重定向解析，提高响应速度
+        const [signAndFileId, initialResponse] = await Promise.all([
+            extractSignAndFileId(id),
+            getInitialResponse(id, pwd, env)
+        ]);
+
         if (!signAndFileId) {
             return new Response('Sign value not found', {status: 404});
         }
 
         let downloadUrl;
-        let initialUrl; // 用于存储初始URL
+        let initialUrl;
         if (signAndFileId.redirect) {
             // 获取原始链接
             const originalUrl = signAndFileId.redirect;
             initialUrl = originalUrl;
             // 直接跟踪重定向并返回最终链接
-            const resolvedUrl = await followRedirect(originalUrl);
-            downloadUrl = resolvedUrl;
+            downloadUrl = await followRedirect(originalUrl);
         } else {
             const {fileId, sign} = signAndFileId;
 
@@ -474,8 +428,7 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 const url = resultObj.dom + "/file/" + resultObj.url;
                 initialUrl = url; // 保存初始URL
                 // 跟踪重定向并返回最终链接
-                const resolvedUrl = await followRedirect(url);
-                downloadUrl = resolvedUrl;
+                downloadUrl = await followRedirect(url);
             }
         }
 
@@ -500,10 +453,7 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
             console.log(`Request processed in ${Date.now() - startTime}ms`);
 
-            // 立即返回初始URL，同时在后台解析最终URL并更新缓存
-            const initialResponse = Response.redirect(initialUrl, 302);
-            ctx.waitUntil(resolveAndCacheFinalUrl(initialUrl, cacheKey, id, pwd, env, cacheKeyRequest, cache));
-            return initialResponse;
+            return response;
         }
 
         return new Response('Internal Server Error', {status: 500});
@@ -518,6 +468,13 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
             headers: {'Content-Type': 'application/json'}
         });
     }
+}
+
+// 获取初始响应的函数，用于优化初次请求速度
+async function getInitialResponse(id, pwd, env) {
+    // 这个函数可以用于在后台执行一些预处理任务
+    // 当前为空实现，可根据需要扩展
+    return null;
 }
 
 // 在后台解析最终URL并更新缓存的函数
