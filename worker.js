@@ -150,11 +150,39 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
             if (fnMatch && fnMatch[1]) {
                 const fn = fnMatch[1];
                 try {
-                    // 优化：对于初次请求，我们不需要完整解析fn页面，只需要获取重定向URL
-                    const fnUrl = `https://${LANZOU_DOMAIN}/fn?${fn}`;
-                    return {
-                        redirect: fnUrl
-                    };
+                    const fnResponse = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
+                    const fnContent = await fnResponse.text();
+
+                    if (fnContent.includes('wp_sign') && fnContent.includes('/ajaxm.php?file=')) {
+                        const fileMatchs = fnContent.match(/\/ajaxm\.php\?file=(\d+)/g);
+                        if (!fileMatchs || fileMatchs.length < 2) {
+                            throw new Error('File matches not found or insufficient matches');
+                        }
+                        const fileMatch = fileMatchs[1].match(/\/ajaxm\.php\?file=(\d+)/);
+                        if (fileMatch && fileMatch[1]) {
+                            const fileId = fileMatch[1];
+                            const wp_sign = fnContent.match(/wp_sign\s*=\s*'([^']+)'/)[1];
+                            const ajaxdata = fnContent.match(/ajaxdata\s*=\s*'([^']+)'/)[1];
+                            const postData = {
+                                action: "downprocess",
+                                websignkey: ajaxdata,
+                                signs: ajaxdata,
+                                sign: wp_sign,
+                                websign: "",
+                                kd: "1",
+                                ves: "1"
+                            };
+                            const result = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
+                            const resultObj = JSON.parse(result);
+
+                            if (resultObj && resultObj.url) {
+                                const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
+                                return {
+                                    redirect: downloadUrl
+                                };
+                            }
+                        }
+                    }
                 } catch (error) {
                     console.error('Error in GET request:', error);
                     throw error;
