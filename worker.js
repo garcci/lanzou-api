@@ -176,9 +176,12 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                             const resultObj = JSON.parse(result);
 
                             if (resultObj && resultObj.url) {
+                                // 构造初始下载链接
                                 const downloadUrl = resultObj.dom + "/file/" + resultObj.url;
+                                // 立即跟踪重定向获取最终链接
+                                const finalUrl = await followRedirect(downloadUrl);
                                 return {
-                                    redirect: downloadUrl
+                                    redirect: finalUrl
                                 };
                             }
                         }
@@ -206,18 +209,20 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
     }
 }
 
-// 跟踪重定向地址的函数 - 优化递归处理
-async function followRedirect(url, maxRedirects = 3) { // 减少最大重定向次数
+// 跟踪重定向的函数（最多跟踪10次重定向）
+async function followRedirect(url, maxRedirects = 10) {
+    // 限制最大重定向次数以防止无限循环
     if (maxRedirects <= 0) {
-        console.warn('Max redirect limit reached for URL:', url);
+        console.error('Max redirect limit reached for URL:', url);
         return url;
     }
 
     try {
-        // 使用HEAD请求以减少数据传输
+        // 添加超时控制
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000); // 减少超时时间到3秒
 
+        // 使用HEAD请求以减少数据传输
         const response = await fetch(url, {
             method: 'HEAD',
             headers: getCommonHeaders(),
@@ -239,11 +244,11 @@ async function followRedirect(url, maxRedirects = 3) { // 减少最大重定向�
             }
         }
 
-        // 如果不是重定向，返回当前URL
+        // 如果不是重定向，返回最终URL
         return url;
     } catch (error) {
         console.error('Error following redirect for URL:', url, error);
-        // 发生错误时返回原始URL
+        // 发生错误时返回最终解析得到的URL
         return url;
     }
 }
@@ -453,13 +458,10 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
         }
 
         let downloadUrl;
-        let initialUrl;
         if (signAndFileId.redirect) {
-            // 获取原始链接
-            const originalUrl = signAndFileId.redirect;
-            initialUrl = originalUrl;
-            // 直接跟踪重定向并返回最终链接
-            downloadUrl = await followRedirect(originalUrl);
+            // 获取已经过重定向跟踪的最终链接
+            const finalUrl = signAndFileId.redirect;
+            downloadUrl = finalUrl;
         } else {
             const {fileId, sign} = signAndFileId;
 
@@ -474,16 +476,17 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
             const resultObj = JSON.parse(response);
 
             if (resultObj && resultObj.url) {
+                // 构造初始下载链接
                 const url = resultObj.dom + "/file/" + resultObj.url;
-                initialUrl = url; // 保存初始URL
                 // 跟踪重定向并返回最终链接
                 downloadUrl = await followRedirect(url);
             }
         }
 
-        if (downloadUrl && initialUrl) {
+        // 确保我们获得了最终的下载链接
+        if (downloadUrl) {
             const result = {
-                url: downloadUrl,
+                url: downloadUrl, // 确保这是最终链接
                 timestamp: Date.now(),
                 id: id,
                 pwd: pwd || null
@@ -534,7 +537,7 @@ async function resolveAndCacheFinalUrl(initialUrl, cacheKey, id, pwd, env, cache
 
         if (finalUrl !== initialUrl) {
             const result = {
-                url: finalUrl,
+                url: finalUrl, // 确保这是最终链接
                 timestamp: Date.now(),
                 id: id,
                 pwd: pwd || null
@@ -595,11 +598,9 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
 
         let downloadUrl;
         if (signAndFileId.redirect) {
-            // 获取原始链接
-            const originalUrl = signAndFileId.redirect;
-            // 直接跟踪重定向并返回最终链接
-            const resolvedUrl = await followRedirect(originalUrl);
-            downloadUrl = resolvedUrl;
+            // 获取已经过重定向跟踪的最终链接
+            const finalUrl = signAndFileId.redirect;
+            downloadUrl = finalUrl;
         } else {
             const {fileId, sign} = signAndFileId;
 
@@ -615,6 +616,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
                 const resultObj = JSON.parse(response);
 
                 if (resultObj && resultObj.url) {
+                    // 构造初始下载链接
                     const url = resultObj.dom + "/file/" + resultObj.url;
                     // 跟踪重定向并返回最终链接
                     const resolvedUrl = await followRedirect(url);
@@ -647,9 +649,10 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
             }
         }
 
+        // 确保我们获得了最终的下载链接
         if (downloadUrl) {
             const result = {
-                url: downloadUrl,
+                url: downloadUrl, // 确保这是最终链接
                 timestamp: Date.now(),
                 id: id,
                 pwd: pwd || null
