@@ -8,6 +8,7 @@
 - 支持带密码和不带密码的文件
 - 自动缓存解析结果，提高响应速度
 - 自动刷新过期链接，保持链接有效性
+- 实时验证链接有效性，确保每时每刻请求到的下载链接都是有效的
 
 ## 使用方法
 
@@ -31,12 +32,12 @@
 
 系统通过以下两种方式自动刷新链接：
 
-1. 在处理请求时有5%的概率触发随机刷新检查
-2. 通过 GitHub Actions 每10分钟调用一次 [/refresh](#/refresh) 端点
+1. 在处理请求时实时验证链接有效性，如果链接无效则立即刷新
+2. 通过 GitHub Actions 每2分钟调用一次 [/refresh](#/refresh) 端点
 
 ## GitHub Action 配置
 
-要启用每10分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
+要启用每2分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
 
 - `REFRESH_URL`: 刷新接口的完整URL，例如 `https://your-worker.your-subdomain.workers.dev/refresh`
 
