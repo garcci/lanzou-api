@@ -1,18 +1,18 @@
 {
-  "name": "drive-direct-link",
+  "name": "lanzou-api",
   "version": "1.0.0",
-  "description": "网盘直链下载服务",
-  "main": "index.js",
+  "description": "蓝奏云直链解析服务",
+  "main": "worker.js",
   "scripts": {
-    "start": "node index.js"
+    "deploy": "wrangler deploy"
+
   },
   "dependencies": {
-    "express": "^5.1.0"
   },
-  "keywords": [
-    "直链",
-    "下载"
-  ],
+  "devDependencies": {
+    "wrangler": "^4.31.0"
+  },
+  "keywords": ["lanzou", "direct-link", "api"],
   "author": "",
   "license": "MIT"
 }

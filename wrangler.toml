@@ -1,0 +1,15 @@
+name = "lanzou-direct-link"
+main = "worker.js"
+compatibility_date = "2025-08-21"
+
+
+
+[build]
+command = ""
+
+[vars]
+
+[[kv_namespaces]]
+binding = "DOWNLOAD_CACHE"
+id = "9e6cde26fb8c45adb1f1771a00c6a375"
+
