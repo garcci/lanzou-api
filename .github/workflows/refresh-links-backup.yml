@@ -1,17 +1,10 @@
-name: Refresh Download Links
+name: Refresh Download Links (Backup)
 
 on:
   schedule:
-    # 每2分钟运行一次，确保链接始终有效
-    - cron: '*/2 * * * *'
+    # 每5分钟运行一次作为备用方案
+    - cron: '*/5 * * * *'
   workflow_dispatch: # 允许手动触发
-  # 添加push事件触发，便于调试
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/refresh-links.yml'
-      - 'worker.js'
 
 jobs:
   refresh:
@@ -22,13 +15,7 @@ jobs:
           echo "Current time: $(date)"
           echo "GitHub repository: ${{ github.repository }}"
           echo "GitHub event name: ${{ github.event_name }}"
-          echo "GitHub SHA: ${{ github.sha }}"
-          echo "GitHub ref: ${{ github.ref }}"
-          
-      - name: Debug cron schedule
-        run: |
-          echo "If this workflow was triggered by cron, check if it's working properly."
-          echo "Last commit time: $(git log -1 --format='%cd')"
+          echo "Backup workflow triggered"
           
       - name: Call refresh API with retry mechanism
         run: |
@@ -41,7 +28,7 @@ jobs:
             exit 1
           fi
           
-          echo "Calling refresh API at: ${{ secrets.REFRESH_URL }}"
+          echo "Calling refresh API at: ${{ secrets.REFRESH_URL }} (Backup workflow)"
           
           # 添加时间戳用于跟踪执行
           echo "Execution timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
