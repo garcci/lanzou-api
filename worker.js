@@ -264,33 +264,87 @@ function getUnifiedTimeConfig() {
     };
 }
 
-// 统一缓存时间设置函数 - 优化KV写入次数，使用批量操作
+// 统一缓存时间设置函数 - 使用JSON存储时间信息以减少KV写入次数
 async function setUnifiedCacheTimes(cacheKey, env) {
     if (env.DOWNLOAD_CACHE) {
         const timeConfig = getUnifiedTimeConfig();
         
-        // 批量设置所有时间相关键值，减少KV写入次数
-        const batch = [
-            // 主缓存数据已经在其他地方设置，这里只处理时间相关键值
-            env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, timeConfig.refreshTime.toString(), {expirationTtl: CACHE_TTL}),
-            env.DOWNLOAD_CACHE.put(`${cacheKey}_expire`, timeConfig.expireTime.toString(), {expirationTtl: CACHE_TTL + 60 * 60}),
-            env.DOWNLOAD_CACHE.put(`${cacheKey}_access`, timeConfig.now.toString(), {expirationTtl: CACHE_TTL})
-        ];
+        // 将所有时间信息存储在一个JSON对象中，减少KV写入次数
+        const timeData = {
+            access: timeConfig.now,
+            refresh: timeConfig.refreshTime,
+            expire: timeConfig.expireTime,
+            updatedAt: timeConfig.now
+        };
         
-        // 并行执行所有写入操作
-        await Promise.all(batch);
+        await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, JSON.stringify(timeData), {expirationTtl: CACHE_TTL + 60 * 60});
         
         return timeConfig;
     }
     return null;
 }
 
-// 更新访问时间的函数 - 优化KV写入次数
+// 更新访问时间的函数 - 使用JSON格式存储时间信息
 async function updateAccessTime(cacheKey, env) {
     if (env.DOWNLOAD_CACHE) {
-        const timeConfig = getUnifiedTimeConfig();
-        // 只更新访问时间，避免同时更新其他时间戳
-        await env.DOWNLOAD_CACHE.put(`${cacheKey}_access`, timeConfig.now.toString(), {expirationTtl: CACHE_TTL});
+        // 获取现有的时间数据
+        const timeDataStr = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
+        let timeData = {
+            access: Date.now(),
+            refresh: Date.now() + REFRESH_INTERVAL,
+            expire: Date.now() + EXPIRE_INTERVAL,
+            updatedAt: Date.now()
+        };
+        
+        // 如果存在现有数据，则更新访问时间但保留其他时间
+        if (timeDataStr) {
+            try {
+                const parsedData = JSON.parse(timeDataStr);
+                timeData = {
+                    ...parsedData,
+                    access: Date.now(),
+                    updatedAt: Date.now()
+                };
+            } catch (e) {
+                console.error(`Error parsing time data for ${cacheKey}:`, e);
+            }
+        }
+        
+        // 存储更新后的时间数据
+        await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, JSON.stringify(timeData), {expirationTtl: CACHE_TTL + 60 * 60});
+    }
+}
+
+// 检查是否需要刷新链接的函数
+async function shouldRefreshLink(cacheKey, env) {
+    if (!env.DOWNLOAD_CACHE) return false;
+    
+    const timeDataStr = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
+    if (!timeDataStr) return true; // 如果没有时间数据，则需要刷新
+    
+    try {
+        const timeData = JSON.parse(timeDataStr);
+        return Date.now() >= timeData.refresh;
+    } catch (e) {
+        console.error(`Error parsing time data for ${cacheKey}:`, e);
+        return true;
+    }
+}
+
+// 检查链接是否过期的函数
+async function isLinkExpired(cacheKey, env) {
+    if (!env.DOWNLOAD_CACHE) return true;
+    
+    const timeDataStr = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
+    if (!timeDataStr) return true; // 如果没有时间数据，则认为已过期
+    
+    try {
+        const timeData = JSON.parse(timeDataStr);
+        // 检查是否超过过期时间且24小时内未访问
+        return Date.now() >= timeData.expire && (Date.now() - timeData.access) >= EXPIRE_INTERVAL;
+    } catch (e) {
+        console.error(`Error parsing time data for ${cacheKey}:`, e);
+        return true;
     }
 }
 
@@ -583,8 +637,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
         
         try {
             if (env.DOWNLOAD_CACHE) {
-                const timeConfig = getUnifiedTimeConfig();
-                await env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, timeConfig.refreshTime.toString(), {expirationTtl: CACHE_TTL});
+                await updateAccessTime(cacheKey, env);
             }
         } catch (updateError) {
             console.error(`Error updating refresh time for ${cacheKey}:`, updateError);
@@ -619,7 +672,7 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     console.error(`Error parsing cached data for ${priorityCacheKey}:`, e);
                     // 如果解析失败，删除损坏的缓存项
                     await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
-                    await env.DOWNLOAD_CACHE.delete(`${priorityCacheKey}_refresh`);
+                    await env.DOWNLOAD_CACHE.delete(`${priorityCacheKey}_time`); // 删除时间数据
                 }
             }
         }
@@ -642,12 +695,12 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 break;
             }
 
-            if (key.name.endsWith('_refresh')) {
+            if (key.name.endsWith('_time')) {
                 try {
-                    const refreshTimeStr = await env.DOWNLOAD_CACHE.get(key.name);
-                    if (refreshTimeStr) {
-                        const refreshTime = parseInt(refreshTimeStr);
-                        const cacheKey = key.name.replace('_refresh', '');
+                    const timeDataStr = await env.DOWNLOAD_CACHE.get(key.name);
+                    if (timeDataStr) {
+                        const timeData = JSON.parse(timeDataStr);
+                        const cacheKey = key.name.replace('_time', '');
 
                         // 检查是否是优先处理项
                         if (priorityCacheKey && cacheKey === priorityCacheKey) {
@@ -656,9 +709,9 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         }
 
                         // 根据刷新时间分类
-                        if (now >= refreshTime) {
+                        if (now >= timeData.refresh) {
                             // 需要刷新
-                            if (now - refreshTime < URGENT_REFRESH_THRESHOLD) {
+                            if (now - timeData.refresh < URGENT_REFRESH_THRESHOLD) {
                                 // 紧急刷新项（已过期但时间不长）
                                 urgentRefreshItems.push(cacheKey);
                             } else {
@@ -667,36 +720,17 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                             }
                             processedKeys++;
                         }
-                    }
-                } catch (e) {
-                    console.error(`Error processing refresh key ${key.name}:`, e);
-                }
-            }
-
-            // 检查是否有过期的缓存项（24小时内未访问）
-            if (key.name.endsWith('_expire')) {
-                try {
-                    const expireTimeStr = await env.DOWNLOAD_CACHE.get(key.name);
-                    const cacheKey = key.name.replace('_expire', '');
-                    if (expireTimeStr) {
-                        const expireTime = parseInt(expireTimeStr);
-                        if (now >= expireTime) {
-                            // 检查最近访问时间
-                            const accessTimeStr = await env.DOWNLOAD_CACHE.get(`${cacheKey}_access`);
-                            if (accessTimeStr) {
-                                const accessTime = parseInt(accessTimeStr);
-                                // 如果24小时内没有访问过，则标记为过期项
-                                if (now - accessTime >= EXPIRE_INTERVAL) {
-                                    expiredItems.push(cacheKey);
-                                }
-                            } else {
-                                // 没有访问时间记录，标记为过期项
+                        
+                        // 检查是否过期（24小时内未访问）
+                        if (now >= timeData.expire) {
+                            // 如果24小时内没有访问过，则标记为过期项
+                            if (now - timeData.access >= EXPIRE_INTERVAL) {
                                 expiredItems.push(cacheKey);
                             }
                         }
                     }
                 } catch (e) {
-                    console.error(`Error processing expire key ${key.name}:`, e);
+                    console.error(`Error processing time key ${key.name}:`, e);
                 }
             }
         }
@@ -704,9 +738,7 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         // 处理过期项（删除）
         for (const cacheKey of expiredItems) {
             await env.DOWNLOAD_CACHE.delete(cacheKey); // 主缓存
-            await env.DOWNLOAD_CACHE.delete(`${cacheKey}_refresh`); // 刷新时间
-            await env.DOWNLOAD_CACHE.delete(`${cacheKey}_access`); // 访问时间
-            await env.DOWNLOAD_CACHE.delete(`${cacheKey}_expire`); // 过期时间
+            await env.DOWNLOAD_CACHE.delete(`${cacheKey}_time`); // 时间数据
             console.log(`Expired cache entry deleted: ${cacheKey}`);
         }
 
