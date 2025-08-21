@@ -1,0 +1,29 @@
+name: Refresh Download Links
+
+on:
+  schedule:
+    # 每10分钟运行一次
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call refresh API
+        run: |
+          # 使用curl调用刷新接口
+          response=$(curl -s -w "%{http_code}" -X GET ${{ secrets.REFRESH_URL }})
+          http_code=$(tail -c 3 <<< "$response")
+          body=$(sed '$ s/...$//' <<< "$response")
+          
+          echo "Response body: $body"
+          echo "HTTP status code: $http_code"
+          
+          # 检查HTTP状态码，如果不是200则标记为失败
+          if [ "$http_code" -ne 200 ]; then
+            echo "Error: Request failed with status code $http_code"
+            exit 1
+          fi
+          
+          echo "Refresh task completed successfully"

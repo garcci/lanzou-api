@@ -706,8 +706,38 @@ function handleHealthRequest() {
         timestamp: new Date().toISOString()
     };
     return new Response(JSON.stringify(healthData), {
-        headers: {'Content-Type': 'application/json;charset=utf-8'}
+        headers: { 'Content-Type': 'application/json;charset=utf-8' }
     });
+}
+
+// 自动刷新端点
+async function handleRefreshRequest(env) {
+    try {
+        // 触发链接刷新
+        const refreshResult = await checkAndRefreshLinks(env);
+        
+        const result = {
+            status: 'success',
+            message: 'Refresh task completed',
+            timestamp: new Date().toISOString()
+        };
+        
+        return new Response(JSON.stringify(result), {
+            headers: { 'Content-Type': 'application/json;charset=utf-8' }
+        });
+    } catch (error) {
+        const result = {
+            status: 'error',
+            message: 'Failed to execute refresh task',
+            error: error.message,
+            timestamp: new Date().toISOString()
+        };
+        
+        return new Response(JSON.stringify(result), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json;charset=utf-8' }
+        });
+    }
 }
 
 // 主处理函数
@@ -724,6 +754,11 @@ export default {
         // 处理健康检查
         if (path === '/health') {
             return handleHealthRequest();
+        }
+
+        // 处理自动刷新请求
+        if (path === '/refresh') {
+            return await handleRefreshRequest(env);
         }
 
         // 检查是否需要刷新链接（降低触发概率并增加智能判断）
@@ -746,6 +781,6 @@ export default {
             return await handleDownloadRequest(id, pwd, env, request, ctx);
         }
 
-        return new Response('Not Found', {status: 404});
+        return new Response('Not Found', { status: 404 });
     }
 };
