@@ -254,15 +254,43 @@ const REFRESH_INTERVAL = 10 * 60 * 1000; // 10分钟刷新间隔
 const EXPIRE_INTERVAL = 24 * 60 * 60 * 1000; // 24小时未访问则过期
 const URGENT_REFRESH_THRESHOLD = 2 * 60 * 1000; // 2分钟内即将过期的紧急刷新阈值
 
-// 更新访问时间的函数
+// 统一时间管理函数
+function getUnifiedTimeConfig() {
+    const now = Date.now();
+    return {
+        now: now,
+        refreshTime: now + REFRESH_INTERVAL,
+        expireTime: now + EXPIRE_INTERVAL
+    };
+}
+
+// 统一缓存时间设置函数 - 优化KV写入次数，使用批量操作
+async function setUnifiedCacheTimes(cacheKey, env) {
+    if (env.DOWNLOAD_CACHE) {
+        const timeConfig = getUnifiedTimeConfig();
+        
+        // 批量设置所有时间相关键值，减少KV写入次数
+        const batch = [
+            // 主缓存数据已经在其他地方设置，这里只处理时间相关键值
+            env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, timeConfig.refreshTime.toString(), {expirationTtl: CACHE_TTL}),
+            env.DOWNLOAD_CACHE.put(`${cacheKey}_expire`, timeConfig.expireTime.toString(), {expirationTtl: CACHE_TTL + 60 * 60}),
+            env.DOWNLOAD_CACHE.put(`${cacheKey}_access`, timeConfig.now.toString(), {expirationTtl: CACHE_TTL})
+        ];
+        
+        // 并行执行所有写入操作
+        await Promise.all(batch);
+        
+        return timeConfig;
+    }
+    return null;
+}
+
+// 更新访问时间的函数 - 优化KV写入次数
 async function updateAccessTime(cacheKey, env) {
     if (env.DOWNLOAD_CACHE) {
-        // 更新访问时间
-        await env.DOWNLOAD_CACHE.put(`${cacheKey}_access`, Date.now().toString(), {expirationTtl: CACHE_TTL});
-
-        // 更新过期时间
-        const expireTime = Date.now() + EXPIRE_INTERVAL;
-        await env.DOWNLOAD_CACHE.put(`${cacheKey}_expire`, expireTime.toString(), {expirationTtl: CACHE_TTL + 60 * 60});
+        const timeConfig = getUnifiedTimeConfig();
+        // 只更新访问时间，避免同时更新其他时间戳
+        await env.DOWNLOAD_CACHE.put(`${cacheKey}_access`, timeConfig.now.toString(), {expirationTtl: CACHE_TTL});
     }
 }
 
@@ -352,14 +380,11 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
             // 将结果存入KV缓存
             if (env.DOWNLOAD_CACHE) {
-                await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL});
-
-                // 设置定时刷新任务
-                const refreshTime = Date.now() + REFRESH_INTERVAL;
-                await env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, refreshTime.toString(), {expirationTtl: CACHE_TTL});
-
-                // 设置访问时间，用于过期检查
-                await updateAccessTime(cacheKey, env);
+                // 使用Promise.all并行执行主数据写入和时间戳设置，减少KV操作次数
+                await Promise.all([
+                    env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL}),
+                    setUnifiedCacheTimes(cacheKey, env)
+                ]);
             }
 
             // 存储到Cloudflare缓存
@@ -405,14 +430,11 @@ async function resolveAndCacheFinalUrl(initialUrl, cacheKey, id, pwd, env, cache
             // 更新KV缓存
             try {
                 if (env && env.DOWNLOAD_CACHE) {
-                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL});
-
-                    // 设置定时刷新任务
-                    const refreshTime = Date.now() + REFRESH_INTERVAL;
-                    await env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, refreshTime.toString(), {expirationTtl: CACHE_TTL});
-
-                    // 设置访问时间，用于过期检查
-                    await updateAccessTime(cacheKey, env);
+                    // 使用Promise.all并行执行主数据写入和时间戳设置，减少KV操作次数
+                    await Promise.all([
+                        env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL}),
+                        setUnifiedCacheTimes(cacheKey, env)
+                    ]);
                 }
 
                 // 更新Cloudflare缓存
@@ -524,14 +546,11 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
 
             // 更新KV缓存
             if (env.DOWNLOAD_CACHE) {
-                await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL});
-
-                // 设置下一次刷新时间
-                const refreshTime = Date.now() + REFRESH_INTERVAL;
-                await env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, refreshTime.toString(), {expirationTtl: CACHE_TTL});
-
-                // 更新访问时间
-                await updateAccessTime(cacheKey, env);
+                // 使用Promise.all并行执行主数据写入和时间戳设置，减少KV操作次数
+                await Promise.all([
+                    env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL}),
+                    setUnifiedCacheTimes(cacheKey, env)
+                ]);
             }
 
             console.log(`Successfully refreshed download link for ${cacheKey}`);
@@ -564,8 +583,8 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
         
         try {
             if (env.DOWNLOAD_CACHE) {
-                const refreshTime = Date.now() + REFRESH_INTERVAL;
-                await env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, refreshTime.toString(), {expirationTtl: CACHE_TTL});
+                const timeConfig = getUnifiedTimeConfig();
+                await env.DOWNLOAD_CACHE.put(`${cacheKey}_refresh`, timeConfig.refreshTime.toString(), {expirationTtl: CACHE_TTL});
             }
         } catch (updateError) {
             console.error(`Error updating refresh time for ${cacheKey}:`, updateError);
