@@ -712,9 +712,11 @@ function handleHealthRequest() {
 
 // 自动刷新端点
 async function handleRefreshRequest(env) {
+    console.log('Refresh request received');
     try {
         // 触发链接刷新
         await checkAndRefreshLinks(env);
+        console.log('Refresh task completed successfully');
         
         const result = {
             status: 'success',
@@ -726,6 +728,7 @@ async function handleRefreshRequest(env) {
             headers: { 'Content-Type': 'application/json;charset=utf-8' }
         });
     } catch (error) {
+        console.error('Error in refresh task:', error);
         const result = {
             status: 'error',
             message: 'Failed to execute refresh task',

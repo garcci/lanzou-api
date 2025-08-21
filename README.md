@@ -34,18 +34,29 @@
 1. 在处理请求时有5%的概率触发随机刷新检查
 2. 通过 GitHub Actions 每10分钟调用一次 [/refresh](#/refresh) 端点
 
+## GitHub Action 配置
+
+要启用每10分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
+
+- `REFRESH_URL`: 刷新接口的完整URL，例如 `https://your-worker.your-subdomain.workers.dev/refresh`
+
+## 故障排除
+
+如果 GitHub Action 执行失败，请检查以下几点：
+
+1. 确保在 GitHub 仓库设置中正确设置了 `REFRESH_URL` secret
+2. 手动访问刷新接口确认其正常工作：
+   ```bash
+   curl https://your-worker.your-subdomain.workers.dev/refresh
+   ```
+3. 检查 Cloudflare Worker 的日志以获取更多错误信息
+
 ## 部署
 
 1. 克隆此仓库
 2. 安装依赖: `npm install`
 3. 配置 `wrangler.toml` 文件
 4. 部署到 Cloudflare Workers: `npm run deploy`
-
-## GitHub Action 配置
-
-要启用每10分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
-
-- `REFRESH_URL`: 刷新接口的完整URL，例如 `https://your-worker.your-subdomain.workers.dev/refresh`
 
 ## 许可证
 
