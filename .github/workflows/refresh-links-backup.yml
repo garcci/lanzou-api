@@ -2,8 +2,8 @@ name: Refresh Download Links (Backup)
 
 on:
   schedule:
-    # 每5分钟运行一次作为备用方案
-    - cron: '*/5 * * * *'
+    # 每15分钟运行一次作为备用方案
+    - cron: '*/15 * * * *'
   workflow_dispatch: # 允许手动触发
 
 jobs:

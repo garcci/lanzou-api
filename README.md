@@ -33,11 +33,11 @@
 系统通过以下两种方式自动刷新链接：
 
 1. 在处理请求时实时验证链接有效性，如果链接无效则立即刷新
-2. 通过 GitHub Actions 每2分钟调用一次 [/refresh](#/refresh) 端点
+2. 通过 GitHub Actions 每12分钟调用一次 [/refresh](#/refresh) 端点
 
 ## GitHub Action 配置
 
-要启用每2分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
+要启用每12分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
 
 - `REFRESH_URL`: 刷新接口的完整URL，例如 `https://your-worker.your-subdomain.workers.dev/refresh`
 
@@ -77,7 +77,7 @@
    - 确认您的仓库不是私有仓库（私有仓库可能需要额外配置）
    - 检查仓库中是否有最近的提交，GitHub Actions 通常在有提交时更容易触发
    - 可以通过手动触发工作流来测试是否正常工作
-   - 我们已添加了一个备用的每5分钟执行一次的工作流作为冗余机制
+   - 我们已添加了一个备用的每15分钟执行一次的工作流作为冗余机制
 
 2. **"REFRESH_URL secret is not set" 错误**
    - 按照上述步骤正确设置 secret
