@@ -10,7 +10,7 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - name: Call refresh API
+      - name: Call refresh API with retry mechanism
         run: |
           # 检查是否设置了REFRESH_URL
           if [ -z "${{ secrets.REFRESH_URL }}" ]; then
@@ -22,21 +22,43 @@ jobs:
           
           echo "Calling refresh API at: ${{ secrets.REFRESH_URL }}"
           
-          # 使用curl调用刷新接口，设置超时时间
-          response=$(curl -s -w "\n%{http_code}" -X GET "${{ secrets.REFRESH_URL }}" --max-time 30)
+          # 添加重试机制
+          max_retries=3
+          retry_count=0
+          success=false
           
-          # 提取响应体和状态码
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | sed '$d')
+          while [ $retry_count -lt $max_retries ] && [ "$success" = false ]; do
+            # 使用curl调用刷新接口，设置超时时间
+            response=$(curl -s -w "\n%{http_code}" -X GET "${{ secrets.REFRESH_URL }}" --max-time 30)
+            
+            # 提取响应体和状态码
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | sed '$d')
+            
+            echo "Attempt $((retry_count+1)) - Response body: $body"
+            echo "Attempt $((retry_count+1)) - HTTP status code: $http_code"
+            
+            # 检查HTTP状态码，如果是2xx则标记为成功
+            if [[ $http_code -ge 200 && $http_code -lt 300 ]]; then
+              echo "Refresh task completed successfully on attempt $((retry_count+1))"
+              success=true
+            else
+              echo "Attempt $((retry_count+1)) failed with status code $http_code"
+              retry_count=$((retry_count+1))
+              
+              # 如果还没达到最大重试次数，则等待一段时间后重试
+              if [ $retry_count -lt $max_retries ]; then
+                sleep_time=$((retry_count * 30))  # 逐步增加等待时间
+                echo "Waiting ${sleep_time}s before retry..."
+                sleep $sleep_time
+              fi
+            fi
+          done
           
-          echo "Response body: $body"
-          echo "HTTP status code: $http_code"
-          
-          # 检查HTTP状态码，如果不是2xx则标记为失败
-          if [[ $http_code -lt 200 || $http_code -ge 300 ]]; then
-            echo "Error: Request failed with status code $http_code"
-            echo "Response body: $body"
+          # 如果所有重试都失败了，则退出并标记为失败
+          if [ "$success" = false ]; then
+            echo "Error: Request failed after $max_retries attempts"
+            echo "Last response body: $body"
+            echo "Last HTTP status code: $http_code"
             exit 1
           fi
-          
-          echo "Refresh task completed successfully"

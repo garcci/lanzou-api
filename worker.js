@@ -441,13 +441,22 @@ async function resolveAndCacheFinalUrl(initialUrl, cacheKey, id, pwd, env, cache
     }
 }
 
-// 定时刷新函数
-async function refreshDownloadLink(cacheKey, id, pwd, env) {
-    console.log(`Refreshing download link for ${cacheKey}`);
+// 定时刷新函数 - 添加重试机制
+async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
+    console.log(`Refreshing download link for ${cacheKey} (attempt ${retryCount + 1})`);
     try {
         const signAndFileId = await extractSignAndFileId(id);
         if (!signAndFileId) {
             console.error(`Failed to refresh ${cacheKey}: Sign value not found`);
+            // 添加重试机制
+            if (retryCount < RETRY_CONFIG.maxRetries) {
+                const delayTime = RETRY_CONFIG.exponentialBackoff
+                    ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
+                    : RETRY_CONFIG.retryDelay;
+                
+                await delay(delayTime);
+                return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
+            }
             return false;
         }
 
@@ -479,10 +488,28 @@ async function refreshDownloadLink(cacheKey, id, pwd, env) {
                     downloadUrl = resolvedUrl;
                 } else {
                     console.error(`Invalid response structure for ${cacheKey}:`, resultObj);
+                    // 添加重试机制
+                    if (retryCount < RETRY_CONFIG.maxRetries) {
+                        const delayTime = RETRY_CONFIG.exponentialBackoff
+                            ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
+                            : RETRY_CONFIG.retryDelay;
+                        
+                        await delay(delayTime);
+                        return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
+                    }
                     return false;
                 }
             } catch (parseError) {
                 console.error(`Failed to parse response for ${cacheKey}:`, parseError);
+                // 添加重试机制
+                if (retryCount < RETRY_CONFIG.maxRetries) {
+                    const delayTime = RETRY_CONFIG.exponentialBackoff
+                        ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
+                        : RETRY_CONFIG.retryDelay;
+                    
+                    await delay(delayTime);
+                    return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
+                }
                 return false;
             }
         }
@@ -511,11 +538,30 @@ async function refreshDownloadLink(cacheKey, id, pwd, env) {
             return true;
         } else {
             console.error(`Failed to get download URL for ${cacheKey}`);
+            // 添加重试机制
+            if (retryCount < RETRY_CONFIG.maxRetries) {
+                const delayTime = RETRY_CONFIG.exponentialBackoff
+                    ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
+                    : RETRY_CONFIG.retryDelay;
+                
+                await delay(delayTime);
+                return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
+            }
             return false;
         }
     } catch (error) {
         console.error(`Error refreshing download link for ${cacheKey}:`, error);
         // 出错时也更新刷新时间，避免持续尝试失败的刷新
+        // 添加重试机制
+        if (retryCount < RETRY_CONFIG.maxRetries) {
+            const delayTime = RETRY_CONFIG.exponentialBackoff
+                ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
+                : RETRY_CONFIG.retryDelay;
+            
+            await delay(delayTime);
+            return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
+        }
+        
         try {
             if (env.DOWNLOAD_CACHE) {
                 const refreshTime = Date.now() + REFRESH_INTERVAL;
@@ -656,8 +702,25 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     const id = parts[0];
                     const pwd = parts[1] === 'nopwd' ? null : parts[1];
 
-                    // 异步刷新链接
-                    await refreshDownloadLink(cacheKey, id, pwd, env);
+                    // 异步刷新链接，带重试机制
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    let success = false;
+
+                    while (retryCount <= maxRetries && !success) {
+                        try {
+                            success = await refreshDownloadLink(cacheKey, id, pwd, env);
+                        } catch (e) {
+                            retryCount++;
+                            if (retryCount <= maxRetries) {
+                                const delay = Math.pow(2, retryCount) * 100; // 指数退避
+                                console.log(`Retrying ${cacheKey} (attempt ${retryCount}) after ${delay}ms...`);
+                                await new Promise(resolve => setTimeout(resolve, delay));
+                            } else {
+                                console.error(`Failed to refresh urgent item ${cacheKey} after ${maxRetries} retries`, e);
+                            }
+                        }
+                    }
                 }
             } catch (e) {
                 console.error(`Error refreshing urgent item ${cacheKey}:`, e);
@@ -675,8 +738,25 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     const id = parts[0];
                     const pwd = parts[1] === 'nopwd' ? null : parts[1];
 
-                    // 异步刷新链接
-                    await refreshDownloadLink(cacheKey, id, pwd, env);
+                    // 异步刷新链接，带重试机制
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    let success = false;
+
+                    while (retryCount <= maxRetries && !success) {
+                        try {
+                            success = await refreshDownloadLink(cacheKey, id, pwd, env);
+                        } catch (e) {
+                            retryCount++;
+                            if (retryCount <= maxRetries) {
+                                const delay = Math.pow(2, retryCount) * 100; // 指数退避
+                                console.log(`Retrying ${cacheKey} (attempt ${retryCount}) after ${delay}ms...`);
+                                await new Promise(resolve => setTimeout(resolve, delay));
+                            } else {
+                                console.error(`Failed to refresh normal item ${cacheKey} after ${maxRetries} retries`, e);
+                            }
+                        }
+                    }
                 }
             } catch (e) {
                 console.error(`Error refreshing normal item ${cacheKey}:`, e);
