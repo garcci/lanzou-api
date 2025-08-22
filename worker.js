@@ -1,16 +1,6 @@
 // worker.js
 const LANZOU_DOMAIN = "lanzoux.com";
 
-// 为 Node.js 环境模拟 caches 对象
-if (typeof caches === 'undefined') {
-    global.caches = {
-        default: {
-            match: async () => null,
-            put: async () => {}
-        }
-    };
-}
-
 // 统一的请求头
 function getCommonHeaders() {
     return {
@@ -1125,10 +1115,5 @@ const worker = {
         }
     }
 };
-
-// 为 Node.js 环境导出模块
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { default: worker };
-}
 
 export default worker;

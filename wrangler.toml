@@ -1,8 +1,6 @@
 name = "lanzou-direct-link"
 main = "worker.js"
-compatibility_date = "2025-08-21"
-
-
+compatibility_date = "2023-10-01"
 
 [build]
 command = ""
