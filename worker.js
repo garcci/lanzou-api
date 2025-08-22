@@ -128,13 +128,16 @@ const worker = {
 
     // 添加 scheduled 事件处理器以支持 Cron Triggers
     async scheduled(controller, env, ctx) {
-        console.log('Cron job triggered');
+        console.log('Cron job triggered at:', new Date().toISOString());
+        const startTime = Date.now();
         try {
             // 执行链接刷新任务
             await checkAndRefreshLinks(env);
-            console.log('Cron job completed successfully');
+            const duration = Date.now() - startTime;
+            console.log(`Cron job completed successfully at: ${new Date().toISOString()}, duration: ${duration}ms`);
         } catch (error) {
-            console.error('Error in cron job:', error);
+            const duration = Date.now() - startTime;
+            console.error(`Error in cron job at: ${new Date().toISOString()}, duration: ${duration}ms`, error);
         }
     }
 };

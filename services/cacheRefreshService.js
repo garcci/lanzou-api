@@ -50,8 +50,10 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const normalRefreshItems = [];  // 正常刷新的项
         const expiredItems = [];        // 已过期的项
 
-        // 限制处理的键数量以提高性能
-        const maxKeysToProcess = 100; // 增加到100个键以确保更多链接得到处理
+        // 从环境变量读取配置参数
+        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 100;
+        const urgentThreshold = env?.URGENT_THRESHOLD ? parseInt(env.URGENT_THRESHOLD) : (3 * 60 * 1000);
+        
         let processedKeys = 0;
 
         // 批量获取缓存数据
@@ -94,10 +96,10 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 }
 
                 // 根据刷新时间分类
-                if (now >= refreshTime || (now + 3 * 60 * 1000) >= (refreshTime + 15 * 60 * 1000)) {
+                if (now >= refreshTime || (now + urgentThreshold) >= (refreshTime + 15 * 60 * 1000)) {
                     // 需要刷新（当前时间超过刷新时间或即将过期）
-                    if ((now + 3 * 60 * 1000) >= (refreshTime + 15 * 60 * 1000)) {
-                        // 紧急刷新项（3分钟内即将过期）
+                    if ((now + urgentThreshold) >= (refreshTime + 15 * 60 * 1000)) {
+                        // 紧急刷新项（默认3分钟内即将过期）
                         urgentRefreshItems.push(cacheKey);
                     } else {
                         // 正常刷新项
@@ -123,6 +125,8 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 }
             }
         }
+
+        console.log(`Cache refresh statistics: ${urgentRefreshItems.length} urgent, ${normalRefreshItems.length} normal, ${expiredItems.length} expired`);
 
         // 处理过期项（删除）
         for (const cacheKey of expiredItems) {

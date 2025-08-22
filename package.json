@@ -2,7 +2,7 @@
   "name": "lanzou-direct-link-worker",
   "version": "1.0.0",
   "description": "蓝奏云直链解析服务 - Cloudflare Worker 版本",
-  "main": "worker-mini.js",
+  "main": "worker.js",
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
