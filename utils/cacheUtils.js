@@ -1,5 +1,6 @@
 // utils/cacheUtils.js
 import memoryCache from './memoryCache.js';
+import { getMimeTypeFromUrl } from './mimeUtils.js';
 
 // 创建缓存实例
 // 支持从环境变量读取配置参数，实现动态调整刷新策略
@@ -7,6 +8,71 @@ const CACHE_TTL = 15 * 60; // 15分钟缓存时间，与下载链接失效时间
 const REFRESH_INTERVAL = 15 * 60 * 1000; // 15分钟刷新间隔（与 cron trigger 同步）
 const URGENT_REFRESH_THRESHOLD = 3 * 60 * 1000; // 3分钟内即将过期的紧急刷新阈值
 const MEMORY_CACHE_TTL = 5 * 60 * 1000; // 内存缓存5分钟过期时间
+
+// 判断文件类型是否值得缓存
+function isCacheableFileType(url) {
+    const cacheableExtensions = [
+        '.jpg', '.jpeg', '.png', '.gif', '.webp', '.ico',  // 图片
+        '.mp4', '.webm', '.mov', '.avi', '.mkv',          // 视频
+        '.mp3', '.wav', '.ogg', '.m4a'                    // 音频
+    ];
+    
+    if (!url) return false;
+    
+    const lowerUrl = url.toLowerCase();
+    return cacheableExtensions.some(ext => lowerUrl.endsWith(ext));
+}
+
+// 获取缓存项的访问频率分数
+function getAccessFrequencyScore(cacheData) {
+    // 简化的访问频率计算，实际项目中可以基于历史访问数据计算
+    // 这里我们基于缓存数据的存在时间和类型来估算
+    if (!cacheData || !cacheData.timestamp) return 0;
+    
+    const ageInMinutes = (Date.now() - cacheData.timestamp) / (60 * 1000);
+    // 较新的项获得更高的分数
+    return Math.max(0, 100 - ageInMinutes);
+}
+
+// 确定缓存项的刷新优先级
+export function getRefreshPriority(cacheKey, cacheData, env) {
+    if (!cacheData) return 0;
+    
+    let priority = 0;
+    
+    // 1. 根据文件类型确定基础优先级
+    const mimeType = getMimeTypeFromUrl(cacheData.url);
+    const isImage = mimeType && mimeType.startsWith('image/');
+    const isMedia = mimeType && (mimeType.startsWith('video/') || mimeType.startsWith('audio/'));
+    const isCacheableFile = isCacheableFileType(cacheData.url);
+    
+    if (isImage) priority += 30;
+    else if (isMedia) priority += 20;
+    else if (isCacheableFile) priority += 10;
+    
+    // 2. 根据访问频率调整优先级
+    const frequencyScore = getAccessFrequencyScore(cacheData);
+    priority += Math.min(frequencyScore, 50); // 最多增加50分
+    
+    // 3. 根据时间因素调整优先级
+    const now = Date.now();
+    const timeToExpiry = (cacheData._time?.refresh || now) + (15 * 60 * 1000) - now;
+    
+    // 即将过期的项优先级更高
+    if (timeToExpiry < 5 * 60 * 1000) { // 5分钟内过期
+        priority += 40;
+    } else if (timeToExpiry < 10 * 60 * 1000) { // 10分钟内过期
+        priority += 20;
+    }
+    
+    // 4. 从环境变量获取自定义权重
+    const customWeight = env?.PRIORITY_WEIGHTS?.[cacheKey];
+    if (customWeight) {
+        priority += parseInt(customWeight) || 0;
+    }
+    
+    return priority;
+}
 
 // 统一时间管理函数
 export function getUnifiedTimeConfig(env) {

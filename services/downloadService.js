@@ -2,6 +2,7 @@
 import { extractSignAndFileId, followRedirect, checkUrlValidity } from '../utils/linkUtils.js';
 import { postRequest } from '../utils/httpUtils.js';
 import { getCacheData, setCacheData, shouldRefreshLink, deleteFromMemoryCache } from '../utils/cacheUtils.js';
+import { getMimeTypeFromUrl, shouldDisplayInline } from '../utils/mimeUtils.js';
 
 const LANZOU_DOMAIN = "lanzoux.com";
 
@@ -48,7 +49,25 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 if (!needRefresh && isUrlValid) {
                     console.log(`Cache hit for ${cacheKey} (memory or KV)`);
                     // 更新Cloudflare缓存
-                    const response = Response.redirect(cachedData.url, 302);
+                    const mimeType = getMimeTypeFromUrl(cachedData.url);
+                    const headers = {};
+                    
+                    if (mimeType) {
+                        if (shouldDisplayInline(mimeType)) {
+                            headers['Content-Disposition'] = 'inline';
+                            headers['X-Display-Inline'] = 'true';
+                        }
+                        headers['Content-Type'] = mimeType;
+                    }
+                    
+                    const response = new Response(null, {
+                        status: 302,
+                        headers: {
+                            ...headers,
+                            'Location': cachedData.url
+                        }
+                    });
+                    
                     ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
                     return response;
                 } else if (!isUrlValid) {
@@ -62,7 +81,25 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 console.error(`Error processing cached data for ${cacheKey}:`, e);
                 // 即使检查失败，也优先返回缓存结果
                 console.log(`Returning cached result despite check errors for ${cacheKey}`);
-                const response = Response.redirect(cachedData.url, 302);
+                const mimeType = getMimeTypeFromUrl(cachedData.url);
+                const headers = {};
+                
+                if (mimeType) {
+                    if (shouldDisplayInline(mimeType)) {
+                        headers['Content-Disposition'] = 'inline';
+                        headers['X-Display-Inline'] = 'true';
+                    }
+                    headers['Content-Type'] = mimeType;
+                }
+                
+                const response = new Response(null, {
+                    status: 302,
+                    headers: {
+                        ...headers,
+                        'Location': cachedData.url
+                    }
+                });
+                
                 ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
                 return response;
             }
@@ -133,7 +170,25 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
             }
 
             // 存储到Cloudflare缓存
-            const response = Response.redirect(downloadUrl, 302);
+            const mimeType = getMimeTypeFromUrl(downloadUrl);
+            const headers = {};
+            
+            if (mimeType) {
+                if (shouldDisplayInline(mimeType)) {
+                    headers['Content-Disposition'] = 'inline';
+                    headers['X-Display-Inline'] = 'true';
+                }
+                headers['Content-Type'] = mimeType;
+            }
+            
+            const response = new Response(null, {
+                status: 302,
+                headers: {
+                    ...headers,
+                    'Location': downloadUrl
+                }
+            });
+            
             ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
 
             console.log(`Request processed in ${Date.now() - startTime}ms`);

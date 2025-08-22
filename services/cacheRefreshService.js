@@ -1,5 +1,5 @@
 // services/cacheRefreshService.js
-import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache } from '../utils/cacheUtils.js';
+import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, getRefreshPriority } from '../utils/cacheUtils.js';
 import { refreshDownloadLink } from './downloadService.js';
 
 // 检查并刷新过期链接的任务函数
@@ -51,6 +51,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const urgentRefreshItems = [];  // 即将过期需要紧急刷新的项
         const normalRefreshItems = [];  // 正常刷新的项
         const expiredItems = [];        // 已过期的项
+        const priorityItems = [];       // 智能优先级排序的项
 
         // 从环境变量读取配置参数
         const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 100;
@@ -85,7 +86,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
             }
         }
 
-        // 处理每个缓存项
+        // 处理每个缓存项并计算优先级
         for (const [cacheKey, cacheData] of cacheDataMap.entries()) {
             try {
                 const timeData = cacheData._time;
@@ -107,6 +108,12 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         // 正常刷新项
                         normalRefreshItems.push(cacheKey);
                     }
+                    
+                    // 添加到优先级列表中
+                    priorityItems.push({
+                        key: cacheKey,
+                        priority: getRefreshPriority(cacheKey, cacheData, env)
+                    });
                 }
 
                 // 检查是否过期（基于刷新时间+15分钟）
@@ -132,6 +139,10 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
         console.log(`Cache refresh statistics: ${urgentRefreshItems.length} urgent, ${normalRefreshItems.length} normal, ${expiredItems.length} expired`);
 
+        // 按优先级排序
+        priorityItems.sort((a, b) => b.priority - a.priority);
+        console.log(`Top 5 priority items:`, priorityItems.slice(0, 5));
+
         // 处理过期项（删除）
         for (const cacheKey of expiredItems) {
             if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
@@ -142,8 +153,12 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
             console.log(`Expired cache entry deleted: ${cacheKey}`);
         }
 
-        // 优先处理紧急刷新项
-        for (const cacheKey of urgentRefreshItems) {
+        // 根据优先级顺序处理刷新项，而不是简单地先紧急后正常
+        const itemsToRefresh = priorityItems.slice(0, maxKeysToProcess);
+        
+        // 处理需要刷新的项
+        for (const item of itemsToRefresh) {
+            const cacheKey = item.key;
             try {
                 const cachedData = await getCacheData(cacheKey, env);
                 if (cachedData) {
@@ -168,49 +183,17 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                                 console.log(`Retrying ${cacheKey} (attempt ${retryCount}) after ${delay}ms...`);
                                 await new Promise(resolve => setTimeout(resolve, delay));
                             } else {
-                                console.error(`Failed to refresh urgent item ${cacheKey} after ${maxRetries} retries`, e);
+                                console.error(`Failed to refresh item ${cacheKey} after ${maxRetries} retries`, e);
                             }
                         }
                     }
-                }
-            } catch (e) {
-                console.error(`Error refreshing urgent item ${cacheKey}:`, e);
-            }
-        }
-
-        // 处理正常刷新项
-        for (const cacheKey of normalRefreshItems) {
-            try {
-                const cachedData = await getCacheData(cacheKey, env);
-                if (cachedData) {
-                    // 不需要解析JSON，只需要知道缓存项存在
-                    // 提取id和pwd
-                    const parts = cacheKey.replace('download_', '').split('_');
-                    const id = parts[0];
-                    const pwd = parts[1] === 'nopwd' ? null : parts[1];
-
-                    // 异步刷新链接，带重试机制
-                    let retryCount = 0;
-                    const maxRetries = 3;
-                    let success = false;
-
-                    while (retryCount <= maxRetries && !success) {
-                        try {
-                            success = await refreshDownloadLink(cacheKey, id, pwd, env);
-                        } catch (e) {
-                            retryCount++;
-                            if (retryCount <= maxRetries) {
-                                const delay = Math.pow(2, retryCount) * 100; // 指数退避
-                                console.log(`Retrying ${cacheKey} (attempt ${retryCount}) after ${delay}ms...`);
-                                await new Promise(resolve => setTimeout(resolve, delay));
-                            } else {
-                                console.error(`Failed to refresh normal item ${cacheKey} after ${maxRetries} retries`, e);
-                            }
-                        }
+                    
+                    if (success) {
+                        console.log(`Successfully refreshed ${cacheKey} with priority ${item.priority}`);
                     }
                 }
             } catch (e) {
-                console.error(`Error refreshing normal item ${cacheKey}:`, e);
+                console.error(`Error refreshing item ${cacheKey}:`, e);
             }
         }
 
