@@ -68,20 +68,20 @@ async function getRequest(url, retryCount = 0, options = {}) {
         });
 
         clearTimeout(timeoutId);
-        
+
         // 检查响应状态
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`HTTP ${response.status}: ${response.statusText}. Response: ${errorText.substring(0, 200)}`);
         }
-        
+
         const responseText = await response.text();
-        
+
         // 检查是否是HTML错误页面（仅对特定请求检查）
         if (url.includes('/ajaxm.php') && (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html'))) {
             throw new Error(`Received HTML error page instead of JSON response. Response starts with: ${responseText.substring(0, 200)}`);
         }
-        
+
         return new Response(responseText, response);
     } catch (error) {
         console.error(`Error in GET request (attempt ${retryCount + 1}):`, error.message);
@@ -121,20 +121,20 @@ async function postRequest(url, data, retryCount = 0) {
         });
 
         clearTimeout(timeoutId);
-        
+
         // 检查响应状态
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`HTTP ${response.status}: ${response.statusText}. Response: ${errorText.substring(0, 200)}`);
         }
-        
+
         const responseText = await response.text();
-        
+
         // 检查是否是HTML错误页面
         if (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html')) {
             throw new Error(`Received HTML error page instead of JSON response. Response starts with: ${responseText.substring(0, 200)}`);
         }
-        
+
         return responseText;
     } catch (error) {
         console.error(`Error in POST request (attempt ${retryCount + 1}):`, error.message);
@@ -157,7 +157,7 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
     try {
         const response = await getRequest(`https://${LANZOU_DOMAIN}/${fileId}`);
         const htmlText = await response.text();
-        
+
         // 检查是否是HTML错误页面
         if (htmlText.trim().startsWith('<!DOCTYPE') || htmlText.trim().startsWith('<html')) {
             // 检查是否包含错误信息
@@ -188,7 +188,7 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                 try {
                     const fnResponse = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
                     const fnContent = await fnResponse.text();
-                    
+
                     // 检查是否是HTML错误页面
                     if (fnContent.trim().startsWith('<!DOCTYPE') || fnContent.trim().startsWith('<html')) {
                         // 检查是否包含错误信息
@@ -208,15 +208,15 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                             // 添加安全检查，确保匹配存在
                             const wpSignMatch = fnContent.match(/wp_sign\s*=\s*'([^']+)'/);
                             const ajaxDataMatch = fnContent.match(/ajaxdata\s*=\s*'([^']+)'/);
-                            
+
                             if (!wpSignMatch || !wpSignMatch[1]) {
                                 throw new Error('wp_sign not found in fn content');
                             }
-                            
+
                             if (!ajaxDataMatch || !ajaxDataMatch[1]) {
                                 throw new Error('ajaxdata not found in fn content');
                             }
-                            
+
                             const wp_sign = wpSignMatch[1];
                             const ajaxdata = ajaxDataMatch[1];
                             const postData = {
@@ -229,17 +229,17 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                                 ves: "1"
                             };
                             const result = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-                            
+
                             // 增强错误处理
                             if (!result) {
                                 throw new Error('Empty response from server');
                             }
-                            
+
                             // 检查是否是HTML错误页面
                             if (result.trim().startsWith('<!DOCTYPE') || result.trim().startsWith('<html')) {
                                 throw new Error(`Received HTML error page instead of JSON response. Response starts with: ${result.substring(0, 200)}`);
                             }
-                            
+
                             let resultObj;
                             try {
                                 resultObj = JSON.parse(result);
@@ -343,7 +343,7 @@ async function checkUrlValidity(url) {
         });
 
         clearTimeout(timeoutId);
-        
+
         // 如果状态码在200-399范围内，则认为URL有效
         return response.status >= 200 && response.status < 400;
     } catch (error) {
@@ -372,7 +372,7 @@ function getUnifiedTimeConfig() {
 async function setCacheData(cacheKey, data, env) {
     if (env.DOWNLOAD_CACHE) {
         const timeConfig = getUnifiedTimeConfig();
-        
+
         // 合并主数据和时间数据
         const cacheData = {
             ...data,
@@ -383,7 +383,7 @@ async function setCacheData(cacheKey, data, env) {
                 updatedAt: timeConfig.now
             }
         };
-        
+
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.put === 'function') {
             // 将对象序列化为 JSON 字符串后再存储
@@ -410,7 +410,7 @@ async function updateAccessTime(cacheKey, env) {
                             // 更新访问时间
                             cacheData._time.access = now;
                             cacheData._time.updatedAt = now;
-                            
+
                             // 一次性写入更新后的数据（序列化为 JSON 字符串）
                             await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
                         }
@@ -428,7 +428,7 @@ async function updateAccessTime(cacheKey, env) {
 // 检查是否需要刷新链接的函数 - 优化KV读取次数
 async function shouldRefreshLink(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return false;
-    
+
     try {
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.get === 'function') {
@@ -437,17 +437,17 @@ async function shouldRefreshLink(cacheKey, env) {
             if (!cacheData) {
                 return true;
             }
-            
+
             if (!cacheData._time) {
                 // 如果没有时间数据，则需要刷新
                 return true;
             }
-            
+
             const timeData = cacheData._time;
             const now = Date.now();
             const refreshTime = timeData.refresh;
             const expireTime = timeData.expire;
-            
+
             // 三种情况需要刷新：
             // 1. 到了预定刷新时间
             // 2. 即将过期（3分钟内）
@@ -464,7 +464,7 @@ async function shouldRefreshLink(cacheKey, env) {
 // 检查链接是否过期的函数
 async function isLinkExpired(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return true;
-    
+
     try {
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.get === 'function') {
@@ -473,17 +473,17 @@ async function isLinkExpired(cacheKey, env) {
             if (!cacheData) {
                 return true;
             }
-            
+
             if (!cacheData._time) {
                 // 如果没有时间数据，则认为已过期
                 return true;
             }
-            
+
             const timeData = cacheData._time;
             const now = Date.now();
             const expireTime = timeData.expire;
             const accessTime = timeData.access;
-            
+
             // 检查是否超过过期时间且24小时内未访问
             return now >= expireTime && (now - accessTime) >= EXPIRE_INTERVAL;
         }
@@ -497,13 +497,13 @@ async function isLinkExpired(cacheKey, env) {
 // 获取缓存数据的函数 - 减少重复的KV读取
 async function getCacheData(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return null;
-    
+
     try {
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.get === 'function') {
             const cacheData = await env.DOWNLOAD_CACHE.get(cacheKey);
             if (!cacheData) return null;
-            
+
             // 如果返回的是字符串，尝试解析为 JSON
             if (typeof cacheData === 'string') {
                 return JSON.parse(cacheData);
@@ -562,7 +562,7 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 // 检查是否需要刷新链接（即使在有效期内也检查链接是否仍然有效）
                 const needRefresh = await shouldRefreshLink(cacheKey, env);
                 const isUrlValid = await checkUrlValidity(cachedData.url);
-                
+
                 if (!needRefresh && isUrlValid) {
                     console.log(`KV cache hit for ${cacheKey}`);
                     // 更新访问时间
@@ -605,12 +605,12 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
             };
 
             const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-            
+
             // 增强错误处理
             if (!response) {
                 throw new Error('Empty response from server');
             }
-            
+
             let resultObj;
             try {
                 resultObj = JSON.parse(response);
@@ -734,7 +734,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
                 const delayTime = RETRY_CONFIG.exponentialBackoff
                     ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
                     : RETRY_CONFIG.retryDelay;
-                
+
                 await delay(delayTime);
                 return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
             }
@@ -758,12 +758,12 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
 
             try {
                 const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-                
+
                 // 增强错误处理
                 if (!response) {
                     throw new Error('Empty response from server');
                 }
-                
+
                 let resultObj;
                 try {
                     resultObj = JSON.parse(response);
@@ -785,7 +785,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
                         const delayTime = RETRY_CONFIG.exponentialBackoff
                             ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
                             : RETRY_CONFIG.retryDelay;
-                        
+
                         await delay(delayTime);
                         return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
                     }
@@ -798,7 +798,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
                     const delayTime = RETRY_CONFIG.exponentialBackoff
                         ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
                         : RETRY_CONFIG.retryDelay;
-                    
+
                     await delay(delayTime);
                     return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
                 }
@@ -830,7 +830,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
                 const delayTime = RETRY_CONFIG.exponentialBackoff
                     ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
                     : RETRY_CONFIG.retryDelay;
-                
+
                 await delay(delayTime);
                 return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
             }
@@ -844,11 +844,11 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
             const delayTime = RETRY_CONFIG.exponentialBackoff
                 ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
                 : RETRY_CONFIG.retryDelay;
-            
+
             await delay(delayTime);
             return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
         }
-        
+
         try {
             if (env.DOWNLOAD_CACHE) {
                 await updateAccessTime(cacheKey, env);
@@ -915,7 +915,7 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         // 批量获取缓存数据
         const batchSize = 20;
         const cacheDataMap = new Map();
-        
+
         // 将所有需要处理的键分批获取
         for (let i = 0; i < keys.keys.length && processedKeys < maxKeysToProcess; i += batchSize) {
             const batchKeys = keys.keys.slice(i, i + batchSize).filter(key => !key.name.endsWith('_time'));
@@ -964,7 +964,7 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         normalRefreshItems.push(cacheKey);
                     }
                 }
-                
+
                 // 检查是否过期（24小时内未访问）
                 if (now >= expireTime) {
                     // 如果24小时内没有访问过，则标记为过期项
@@ -1101,13 +1101,13 @@ async function handleRefreshRequest(env) {
         // 触发链接刷新
         await checkAndRefreshLinks(env);
         console.log('Refresh task completed successfully');
-        
+
         const result = {
             status: 'success',
             message: 'Refresh task completed',
             timestamp: new Date().toISOString()
         };
-        
+
         return new Response(JSON.stringify(result), {
             headers: { 'Content-Type': 'application/json;charset=utf-8' }
         });
@@ -1119,7 +1119,7 @@ async function handleRefreshRequest(env) {
             error: error.message,
             timestamp: new Date().toISOString()
         };
-        
+
         return new Response(JSON.stringify(result), {
             status: 500,
             headers: { 'Content-Type': 'application/json;charset=utf-8' }
@@ -1178,7 +1178,7 @@ const worker = {
                 if (ctx && ctx.waitUntil && Math.random() < 0.05) {  // 5%的概率触发刷新
                     ctx.waitUntil(checkAndRefreshLinks(env));
                 }
-                
+
                 return await handleDownloadRequest(id, pwd, env, request, ctx);
             }
 
@@ -1193,6 +1193,18 @@ const worker = {
                 status: 500,
                 headers: {'Content-Type': 'application/json;charset=UTF-8'}
             });
+        }
+    },
+
+    // 添加 scheduled 事件处理器以支持 Cron Triggers
+    async scheduled(controller, env, ctx) {
+        console.log('Cron job triggered');
+        try {
+            // 执行链接刷新任务
+            await checkAndRefreshLinks(env);
+            console.log('Cron job completed successfully');
+        } catch (error) {
+            console.error('Error in cron job:', error);
         }
     }
 };

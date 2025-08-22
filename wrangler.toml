@@ -2,6 +2,10 @@ name = "lanzou-direct-link"
 main = "worker.js"
 compatibility_date = "2023-10-01"
 
+# 添加 Cron Triggers 配置
+[triggers]
+crons = ["*/12 * * * *"] # 每12分钟执行一次
+
 [build]
 command = ""
 

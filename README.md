@@ -30,12 +30,20 @@
 
 ## 自动刷新机制
 
-系统通过以下两种方式自动刷新链接：
+系统通过以下几种方式自动刷新链接：
 
 1. 在处理请求时实时验证链接有效性，如果链接即将失效则立即刷新
-2. 通过 GitHub Actions 每12分钟调用一次 [/refresh](#/refresh) 端点
+2. 通过 Worker 内置的 Cron Triggers 每12分钟自动执行刷新任务
+3. 通过 GitHub Actions 每12分钟调用一次 [/refresh](#/refresh) 端点（备用方案）
 
 下载链接的有效期为15分钟，系统会在链接失效前自动刷新以确保链接始终有效。
+
+## 部署
+
+1. 克隆此仓库
+2. 安装依赖: `npm install`
+3. 配置 `wrangler.toml` 文件
+4. 部署到 Cloudflare Workers: `npm run deploy`
 
 ## GitHub Action 配置
 
@@ -51,11 +59,45 @@
 5. Value 设置为您的 Worker 刷新接口地址，例如 `https://lanzou-direct-link.your-subdomain.workers.dev/refresh`
 6. 点击 "Add secret" 完成设置
 
+## Cron Triggers 配置（推荐）
+
+Cloudflare Workers 支持内置的定时任务功能，这是推荐的自动刷新方式：
+
+1. 在 `wrangler.toml` 文件中已配置了 Cron Triggers：
+   ```toml
+   [triggers]
+   crons = ["*/12 * * * *"] # 每12分钟执行一次
+   ```
+
+2. 部署 Worker 后，定时任务会自动启用
+
+3. 无需额外配置，比 GitHub Actions 更可靠
+
+## 其他定时任务方案
+
+除了 GitHub Actions 和 Cron Triggers，您还可以使用以下方式定时触发刷新：
+
+### 在线 Cron 服务
+可以使用在线的 Cron 服务定期访问 [/refresh](#/refresh) 端点：
+- [cron-job.org](https://cron-job.org)
+- [easycron.com](https://www.easycron.com)
+- [setcronjob.com](https://www.setcronjob.com)
+
+### 云函数服务
+使用云函数服务（如 AWS Lambda、Google Cloud Functions 等）创建定时任务，定期向 [/refresh](#/refresh) 端点发送请求。
+
+### 自有服务器
+如果您有自己的服务器，可以使用系统的 cron 任务来定期触发刷新：
+```bash
+# 每12分钟执行一次
+*/12 * * * * curl -s https://your-worker.your-subdomain.workers.dev/refresh > /dev/null
+```
+
 ## 故障排除
 
-如果 GitHub Action 执行失败，请按以下步骤排查：
+如果定时任务执行失败，请按以下步骤排查：
 
-1. 确保在 GitHub 仓库设置中正确设置了 `REFRESH_URL` secret
+1. 确保在 GitHub 仓库设置中正确设置了 `REFRESH_URL` secret（如果使用 GitHub Actions）
    - 检查路径：Settings -> Secrets and variables -> Actions
    - 确保 secret 名称是 `REFRESH_URL`，值是正确的刷新接口地址
 
@@ -64,7 +106,7 @@
    curl https://your-worker.your-subdomain.workers.dev/refresh
    ```
 
-3. 检查 GitHub Actions 执行日志：
+3. 检查 GitHub Actions 执行日志（如果使用 GitHub Actions）：
    - 转到仓库的 Actions 页面
    - 查看 "Refresh Download Links" 工作流的执行记录
    - 检查具体的错误信息
@@ -75,11 +117,12 @@
 
 常见问题及解决方案：
 
-1. **GitHub Action 没有自动执行**
-   - 确认您的仓库不是私有仓库（私有仓库可能需要额外配置）
+1. **定时任务没有自动执行**
+   - 如果使用 GitHub Actions，确认您的仓库不是私有仓库（私有仓库可能需要额外配置）
    - 检查仓库中是否有最近的提交，GitHub Actions 通常在有提交时更容易触发
    - 可以通过手动触发工作流来测试是否正常工作
    - 我们已添加了一个备用的每15分钟执行一次的工作流作为冗余机制
+   - 推荐使用 Cloudflare Workers 的 Cron Triggers，它更加可靠
 
 2. **"REFRESH_URL secret is not set" 错误**
    - 按照上述步骤正确设置 secret
@@ -98,13 +141,6 @@
    - GitHub Actions 在高负载期间可能会延迟执行定时任务
    - 这种情况通常在每小时开始时更常见
    - 可以通过手动触发工作流来立即执行刷新任务
-
-## 部署
-
-1. 克隆此仓库
-2. 安装依赖: `npm install`
-3. 配置 `wrangler.toml` 文件
-4. 部署到 Cloudflare Workers: `npm run deploy`
 
 ## 许可证
 
