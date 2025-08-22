@@ -14,4 +14,3 @@ command = ""
 [[kv_namespaces]]
 binding = "DOWNLOAD_CACHE"
 id = "9e6cde26fb8c45adb1f1771a00c6a375"
-
