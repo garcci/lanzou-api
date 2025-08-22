@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  worker:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development

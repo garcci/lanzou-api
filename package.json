@@ -4,13 +4,18 @@
   "description": "蓝奏云直链解析服务",
   "main": "worker.js",
   "scripts": {
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "node server.js",
+    "dev-local": "nodemon server.js"
 
   },
   "dependencies": {
+    "express": "^4.18.2"
   },
   "devDependencies": {
-    "wrangler": "^4.31.0"
+    "wrangler": "^4.31.0",
+    "nodemon": "^3.0.1"
   },
   "keywords": ["lanzou", "direct-link", "api"],
   "author": "",

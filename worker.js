@@ -1,6 +1,16 @@
 // worker.js
 const LANZOU_DOMAIN = "lanzoux.com";
 
+// 为 Node.js 环境模拟 caches 对象
+if (typeof caches === 'undefined') {
+    global.caches = {
+        default: {
+            match: async () => null,
+            put: async () => {}
+        }
+    };
+}
+
 // 统一的请求头
 function getCommonHeaders() {
     return {
@@ -326,7 +336,10 @@ async function setCacheData(cacheKey, data, env) {
             }
         };
         
-        await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData), {expirationTtl: CACHE_TTL + 60 * 60});
+        // 兼容 Cloudflare KV 和本地模拟的 KV
+        if (typeof env.DOWNLOAD_CACHE.put === 'function') {
+            await env.DOWNLOAD_CACHE.put(cacheKey, cacheData);
+        }
         return timeConfig;
     }
     return null;
@@ -335,11 +348,11 @@ async function setCacheData(cacheKey, data, env) {
 // 更新访问时间的函数 - 简化数据结构以减少JSON操作
 async function updateAccessTime(cacheKey, env) {
     if (env.DOWNLOAD_CACHE) {
-        // 一次性读取并更新数据
-        const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-        if (cacheDataStr) {
-            try {
-                const cacheData = JSON.parse(cacheDataStr);
+        try {
+            // 兼容 Cloudflare KV 和本地模拟的 KV
+            if (typeof env.DOWNLOAD_CACHE.get === 'function' && typeof env.DOWNLOAD_CACHE.put === 'function') {
+                // 一次性读取并更新数据
+                const cacheData = await getCacheData(cacheKey, env);
                 if (cacheData && cacheData._time) {
                     const now = Date.now();
                     // 更新访问时间
@@ -347,16 +360,11 @@ async function updateAccessTime(cacheKey, env) {
                     cacheData._time.updatedAt = now;
                     
                     // 一次性写入更新后的数据
-                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData), {expirationTtl: CACHE_TTL + 60 * 60});
+                    await env.DOWNLOAD_CACHE.put(cacheKey, cacheData);
                 }
-            } catch (e) {
-                console.error(`Error updating access time for ${cacheKey}:`, e);
             }
-        } else {
-            // 如果没有缓存数据，创建新的时间数据
-            const timeConfig = getUnifiedTimeConfig();
-            const newTimeString = `${timeConfig.now}|${timeConfig.refreshTime}|${timeConfig.expireTime}|${timeConfig.now}`;
-            await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, newTimeString, {expirationTtl: CACHE_TTL + 60 * 60});
+        } catch (e) {
+            console.error(`Error updating access time for ${cacheKey}:`, e);
         }
     }
 }
@@ -365,31 +373,32 @@ async function updateAccessTime(cacheKey, env) {
 async function shouldRefreshLink(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return false;
     
-    // 一次性读取所有需要的数据
-    const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-    if (!cacheDataStr) {
-        // 检查旧格式数据
-        const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
-        return !timeString; // 如果没有时间数据，则需要刷新
-    }
-    
     try {
-        const cacheData = JSON.parse(cacheDataStr);
-        if (!cacheData._time) {
-            // 如果没有时间数据，则需要刷新
-            return true;
+        // 兼容 Cloudflare KV 和本地模拟的 KV
+        if (typeof env.DOWNLOAD_CACHE.get === 'function') {
+            // 一次性读取所有需要的数据
+            const cacheData = await getCacheData(cacheKey, env);
+            if (!cacheData) {
+                return true;
+            }
+            
+            if (!cacheData._time) {
+                // 如果没有时间数据，则需要刷新
+                return true;
+            }
+            
+            const timeData = cacheData._time;
+            const now = Date.now();
+            const refreshTime = timeData.refresh;
+            const expireTime = timeData.expire;
+            
+            // 三种情况需要刷新：
+            // 1. 到了预定刷新时间
+            // 2. 即将过期（3分钟内）
+            // 3. 已经过期
+            return now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime || now >= expireTime;
         }
-        
-        const timeData = cacheData._time;
-        const now = Date.now();
-        const refreshTime = timeData.refresh;
-        const expireTime = timeData.expire;
-        
-        // 三种情况需要刷新：
-        // 1. 到了预定刷新时间
-        // 2. 即将过期（3分钟内）
-        // 3. 已经过期
-        return now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime || now >= expireTime;
+        return true;
     } catch (e) {
         console.error(`Error parsing cache data for ${cacheKey}:`, e);
         return true;
@@ -400,28 +409,29 @@ async function shouldRefreshLink(cacheKey, env) {
 async function isLinkExpired(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return true;
     
-    // 一次性读取所有需要的数据
-    const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-    if (!cacheDataStr) {
-        // 检查旧格式数据
-        const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
-        return !timeString; // 如果没有时间数据，则认为已过期
-    }
-    
     try {
-        const cacheData = JSON.parse(cacheDataStr);
-        if (!cacheData._time) {
-            // 如果没有时间数据，则认为已过期
-            return true;
+        // 兼容 Cloudflare KV 和本地模拟的 KV
+        if (typeof env.DOWNLOAD_CACHE.get === 'function') {
+            // 一次性读取所有需要的数据
+            const cacheData = await getCacheData(cacheKey, env);
+            if (!cacheData) {
+                return true;
+            }
+            
+            if (!cacheData._time) {
+                // 如果没有时间数据，则认为已过期
+                return true;
+            }
+            
+            const timeData = cacheData._time;
+            const now = Date.now();
+            const expireTime = timeData.expire;
+            const accessTime = timeData.access;
+            
+            // 检查是否超过过期时间且24小时内未访问
+            return now >= expireTime && (now - accessTime) >= EXPIRE_INTERVAL;
         }
-        
-        const timeData = cacheData._time;
-        const now = Date.now();
-        const expireTime = timeData.expire;
-        const accessTime = timeData.access;
-        
-        // 检查是否超过过期时间且24小时内未访问
-        return now >= expireTime && (now - accessTime) >= EXPIRE_INTERVAL;
+        return true;
     } catch (e) {
         console.error(`Error parsing cache data for ${cacheKey}:`, e);
         return true;
@@ -432,11 +442,19 @@ async function isLinkExpired(cacheKey, env) {
 async function getCacheData(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return null;
     
-    const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-    if (!cacheDataStr) return null;
-    
     try {
-        return JSON.parse(cacheDataStr);
+        // 兼容 Cloudflare KV 和本地模拟的 KV
+        if (typeof env.DOWNLOAD_CACHE.get === 'function') {
+            const cacheData = await env.DOWNLOAD_CACHE.get(cacheKey);
+            if (!cacheData) return null;
+            
+            // 如果返回的是字符串，尝试解析为 JSON
+            if (typeof cacheData === 'string') {
+                return JSON.parse(cacheData);
+            }
+            return cacheData;
+        }
+        return null;
     } catch (e) {
         console.error(`Error parsing cache data for ${cacheKey}:`, e);
         return null;
@@ -795,13 +813,24 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 } catch (e) {
                     console.error(`Error parsing cached data for ${priorityCacheKey}:`, e);
                     // 如果解析失败，删除损坏的缓存项
-                    await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
+                    if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
+                        await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
+                    }
                 }
             }
         }
 
-        // 获取所有缓存键
-        const keys = await env.DOWNLOAD_CACHE.list();
+        // 兼容 Cloudflare KV 和本地模拟的 KV
+        let keys = { keys: [] };
+        if (typeof env.DOWNLOAD_CACHE.list === 'function') {
+            keys = await env.DOWNLOAD_CACHE.list();
+        } else if (env.DOWNLOAD_CACHE.store) {
+            // 本地模拟环境
+            const keyArray = Array.from(env.DOWNLOAD_CACHE.store.keys())
+                .filter(key => !key.endsWith('_time'))
+                .map(key => ({ name: key }));
+            keys = { keys: keyArray };
+        }
 
         // 分类处理缓存项
         const urgentRefreshItems = [];  // 即将过期需要紧急刷新的项
@@ -876,9 +905,11 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 console.error(`Error processing cache key ${cacheKey}:`, e);
                 // 如果解析失败，尝试删除损坏的缓存项
                 try {
-                    await env.DOWNLOAD_CACHE.delete(cacheKey);
-                    await env.DOWNLOAD_CACHE.delete(`${cacheKey}_time`);
-                    console.log(`Deleted corrupted cache entry: ${cacheKey}`);
+                    if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
+                        await env.DOWNLOAD_CACHE.delete(cacheKey);
+                        await env.DOWNLOAD_CACHE.delete(`${cacheKey}_time`);
+                        console.log(`Deleted corrupted cache entry: ${cacheKey}`);
+                    }
                 } catch (deleteError) {
                     console.error(`Error deleting corrupted cache entry ${cacheKey}:`, deleteError);
                 }
@@ -887,7 +918,9 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
         // 处理过期项（删除）
         for (const cacheKey of expiredItems) {
-            await env.DOWNLOAD_CACHE.delete(cacheKey); // 主缓存
+            if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
+                await env.DOWNLOAD_CACHE.delete(cacheKey); // 主缓存
+            }
             console.log(`Expired cache entry deleted: ${cacheKey}`);
         }
 
@@ -1024,7 +1057,7 @@ async function handleRefreshRequest(env) {
 }
 
 // 主处理函数
-export default {
+const worker = {
     async fetch(request, env, ctx) {
         try {
             const url = new URL(request.url);
@@ -1057,7 +1090,9 @@ export default {
             // 刷新端点 - 用于触发所有过期链接的刷新
             if (path === '/refresh') {
                 // 异步执行刷新任务
-                ctx.waitUntil(checkAndRefreshLinks(env));
+                if (ctx && ctx.waitUntil) {
+                    ctx.waitUntil(checkAndRefreshLinks(env));
+                }
                 return new Response(JSON.stringify({
                     code: 200,
                     msg: '刷新任务已启动'
@@ -1069,7 +1104,7 @@ export default {
             // 处理下载请求
             if (id) {
                 // 按需刷新缓存（降低触发概率）
-                if (Math.random() < 0.05) {  // 5%的概率触发刷新
+                if (ctx && ctx.waitUntil && Math.random() < 0.05) {  // 5%的概率触发刷新
                     ctx.waitUntil(checkAndRefreshLinks(env));
                 }
                 
@@ -1090,3 +1125,10 @@ export default {
         }
     }
 };
+
+// 为 Node.js 环境导出模块
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { default: worker };
+}
+
+export default worker;
