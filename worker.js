@@ -68,7 +68,21 @@ async function getRequest(url, retryCount = 0, options = {}) {
         });
 
         clearTimeout(timeoutId);
-        return response;
+        
+        // 检查响应状态
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${response.statusText}. Response: ${errorText.substring(0, 200)}`);
+        }
+        
+        const responseText = await response.text();
+        
+        // 检查是否是HTML错误页面（仅对特定请求检查）
+        if (url.includes('/ajaxm.php') && (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html'))) {
+            throw new Error(`Received HTML error page instead of JSON response. Response starts with: ${responseText.substring(0, 200)}`);
+        }
+        
+        return new Response(responseText, response);
     } catch (error) {
         console.error(`Error in GET request (attempt ${retryCount + 1}):`, error.message);
 
@@ -107,7 +121,21 @@ async function postRequest(url, data, retryCount = 0) {
         });
 
         clearTimeout(timeoutId);
-        return await response.text();
+        
+        // 检查响应状态
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${response.statusText}. Response: ${errorText.substring(0, 200)}`);
+        }
+        
+        const responseText = await response.text();
+        
+        // 检查是否是HTML错误页面
+        if (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html')) {
+            throw new Error(`Received HTML error page instead of JSON response. Response starts with: ${responseText.substring(0, 200)}`);
+        }
+        
+        return responseText;
     } catch (error) {
         console.error(`Error in POST request (attempt ${retryCount + 1}):`, error.message);
 
@@ -129,6 +157,14 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
     try {
         const response = await getRequest(`https://${LANZOU_DOMAIN}/${fileId}`);
         const htmlText = await response.text();
+        
+        // 检查是否是HTML错误页面
+        if (htmlText.trim().startsWith('<!DOCTYPE') || htmlText.trim().startsWith('<html')) {
+            // 检查是否包含错误信息
+            if (htmlText.includes('502 Bad Gateway') || htmlText.includes('500 Internal Server Error')) {
+                throw new Error(`Server error encountered: ${htmlText.substring(0, 200)}`);
+            }
+        }
 
         if (htmlText.includes('sign') && htmlText.includes('/ajaxm.php?file=')) {
             const signMatches = htmlText.match(/'sign':'([^']+)'/g);
@@ -152,6 +188,14 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                 try {
                     const fnResponse = await getRequest(`https://${LANZOU_DOMAIN}/fn?${fn}`);
                     const fnContent = await fnResponse.text();
+                    
+                    // 检查是否是HTML错误页面
+                    if (fnContent.trim().startsWith('<!DOCTYPE') || fnContent.trim().startsWith('<html')) {
+                        // 检查是否包含错误信息
+                        if (fnContent.includes('502 Bad Gateway') || fnContent.includes('500 Internal Server Error')) {
+                            throw new Error(`Server error encountered: ${fnContent.substring(0, 200)}`);
+                        }
+                    }
 
                     if (fnContent.includes('wp_sign') && fnContent.includes('/ajaxm.php?file=')) {
                         const fileMatchs = fnContent.match(/\/ajaxm\.php\?file=(\d+)/g);
@@ -185,12 +229,23 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                                 ves: "1"
                             };
                             const result = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
+                            
+                            // 增强错误处理
+                            if (!result) {
+                                throw new Error('Empty response from server');
+                            }
+                            
+                            // 检查是否是HTML错误页面
+                            if (result.trim().startsWith('<!DOCTYPE') || result.trim().startsWith('<html')) {
+                                throw new Error(`Received HTML error page instead of JSON response. Response starts with: ${result.substring(0, 200)}`);
+                            }
+                            
                             let resultObj;
                             try {
                                 resultObj = JSON.parse(result);
                             } catch (parseError) {
                                 console.error('Failed to parse JSON response:', result);
-                                throw new Error('Invalid JSON response from server');
+                                throw new Error(`Invalid JSON response from server: ${result.substring(0, 100)}...`);
                             }
 
                             if (resultObj && resultObj.url) {
@@ -201,6 +256,9 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                                 return {
                                     redirect: finalUrl
                                 };
+                            } else {
+                                console.error('Invalid response structure:', result);
+                                throw new Error(`Invalid response structure from server: ${JSON.stringify(resultObj)}`);
                             }
                         }
                     }
@@ -328,7 +386,8 @@ async function setCacheData(cacheKey, data, env) {
         
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.put === 'function') {
-            await env.DOWNLOAD_CACHE.put(cacheKey, cacheData);
+            // 将对象序列化为 JSON 字符串后再存储
+            await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
         }
         return timeConfig;
     }
@@ -342,15 +401,22 @@ async function updateAccessTime(cacheKey, env) {
             // 兼容 Cloudflare KV 和本地模拟的 KV
             if (typeof env.DOWNLOAD_CACHE.get === 'function' && typeof env.DOWNLOAD_CACHE.put === 'function') {
                 // 一次性读取并更新数据
-                const cacheData = await getCacheData(cacheKey, env);
-                if (cacheData && cacheData._time) {
-                    const now = Date.now();
-                    // 更新访问时间
-                    cacheData._time.access = now;
-                    cacheData._time.updatedAt = now;
-                    
-                    // 一次性写入更新后的数据
-                    await env.DOWNLOAD_CACHE.put(cacheKey, cacheData);
+                const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
+                if (cacheDataStr) {
+                    try {
+                        const cacheData = JSON.parse(cacheDataStr);
+                        if (cacheData && cacheData._time) {
+                            const now = Date.now();
+                            // 更新访问时间
+                            cacheData._time.access = now;
+                            cacheData._time.updatedAt = now;
+                            
+                            // 一次性写入更新后的数据（序列化为 JSON 字符串）
+                            await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
+                        }
+                    } catch (e) {
+                        console.error(`Error updating access time for ${cacheKey}:`, e);
+                    }
                 }
             }
         } catch (e) {
@@ -539,12 +605,18 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
             };
 
             const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
+            
+            // 增强错误处理
+            if (!response) {
+                throw new Error('Empty response from server');
+            }
+            
             let resultObj;
             try {
                 resultObj = JSON.parse(response);
             } catch (parseError) {
                 console.error('Failed to parse JSON response:', response);
-                throw new Error('Invalid JSON response from server');
+                throw new Error(`Invalid JSON response from server: ${response.substring(0, 100)}...`);
             }
 
             if (resultObj && resultObj.url) {
@@ -552,6 +624,9 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 const url = resultObj.dom + "/file/" + resultObj.url;
                 // 跟踪重定向并返回最终链接
                 downloadUrl = await followRedirect(url);
+            } else {
+                console.error('Invalid response structure:', response);
+                throw new Error(`Invalid response structure from server: ${JSON.stringify(resultObj)}`);
             }
         }
 
@@ -683,12 +758,18 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
 
             try {
                 const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
+                
+                // 增强错误处理
+                if (!response) {
+                    throw new Error('Empty response from server');
+                }
+                
                 let resultObj;
                 try {
                     resultObj = JSON.parse(response);
                 } catch (parseError) {
                     console.error(`Failed to parse JSON response for ${cacheKey}:`, response);
-                    throw new Error('Invalid JSON response from server');
+                    throw new Error(`Invalid JSON response from server: ${response.substring(0, 100)}...`);
                 }
 
                 if (resultObj && resultObj.url) {
@@ -698,7 +779,7 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
                     const resolvedUrl = await followRedirect(url);
                     downloadUrl = resolvedUrl;
                 } else {
-                    console.error(`Invalid response structure for ${cacheKey}:`, resultObj);
+                    console.error(`Invalid response structure for ${cacheKey}:`, response);
                     // 添加重试机制
                     if (retryCount < RETRY_CONFIG.maxRetries) {
                         const delayTime = RETRY_CONFIG.exponentialBackoff
