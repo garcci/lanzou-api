@@ -292,24 +292,23 @@ function getUnifiedTimeConfig() {
     };
 }
 
-// 统一缓存时间设置函数 - 简化数据结构以减少JSON操作
-async function setUnifiedCacheTimes(cacheKey, env) {
+// 合并数据存储函数 - 减少KV操作次数
+async function setCacheData(cacheKey, data, env) {
     if (env.DOWNLOAD_CACHE) {
         const timeConfig = getUnifiedTimeConfig();
         
-        // 分开存储时间戳，避免JSON操作
-        const timeData = {
-            access: timeConfig.now.toString(),
-            refresh: timeConfig.refreshTime.toString(),
-            expire: timeConfig.expireTime.toString(),
-            updatedAt: timeConfig.now.toString()
+        // 合并主数据和时间数据
+        const cacheData = {
+            ...data,
+            _time: {
+                access: timeConfig.now,
+                refresh: timeConfig.refreshTime,
+                expire: timeConfig.expireTime,
+                updatedAt: timeConfig.now
+            }
         };
         
-        // 将时间数据序列化为简单的字符串格式
-        const timeString = `${timeData.access}|${timeData.refresh}|${timeData.expire}|${timeData.updatedAt}`;
-        
-        await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, timeString, {expirationTtl: CACHE_TTL + 60 * 60});
-        
+        await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData), {expirationTtl: CACHE_TTL + 60 * 60});
         return timeConfig;
     }
     return null;
@@ -318,44 +317,55 @@ async function setUnifiedCacheTimes(cacheKey, env) {
 // 更新访问时间的函数 - 简化数据结构以减少JSON操作
 async function updateAccessTime(cacheKey, env) {
     if (env.DOWNLOAD_CACHE) {
-        // 获取现有的时间数据
-        const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
-        const now = Date.now().toString();
-        
-        if (timeString) {
+        // 一次性读取并更新数据
+        const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
+        if (cacheDataStr) {
             try {
-                // 解析简单字符串格式的时间数据
-                const [access, refresh, expire, updatedAt] = timeString.split('|');
-                // 只更新访问时间，保留其他时间
-                const newTimeString = `${now}|${refresh}|${expire}|${now}`;
-                await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, newTimeString, {expirationTtl: CACHE_TTL + 60 * 60});
+                const cacheData = JSON.parse(cacheDataStr);
+                if (cacheData && cacheData._time) {
+                    const now = Date.now();
+                    // 更新访问时间
+                    cacheData._time.access = now;
+                    cacheData._time.updatedAt = now;
+                    
+                    // 一次性写入更新后的数据
+                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData), {expirationTtl: CACHE_TTL + 60 * 60});
+                }
             } catch (e) {
-                console.error(`Error parsing time data for ${cacheKey}:`, e);
-                // 如果解析失败，创建新的时间数据
-                const newTimeString = `${now}|${(Date.now() + REFRESH_INTERVAL).toString()}|${(Date.now() + EXPIRE_INTERVAL).toString()}|${now}`;
-                await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, newTimeString, {expirationTtl: CACHE_TTL + 60 * 60});
+                console.error(`Error updating access time for ${cacheKey}:`, e);
             }
         } else {
-            // 如果没有时间数据，创建新的
-            const newTimeString = `${now}|${(Date.now() + REFRESH_INTERVAL).toString()}|${(Date.now() + EXPIRE_INTERVAL).toString()}|${now}`;
+            // 如果没有缓存数据，创建新的时间数据
+            const timeConfig = getUnifiedTimeConfig();
+            const newTimeString = `${timeConfig.now}|${timeConfig.refreshTime}|${timeConfig.expireTime}|${timeConfig.now}`;
             await env.DOWNLOAD_CACHE.put(`${cacheKey}_time`, newTimeString, {expirationTtl: CACHE_TTL + 60 * 60});
         }
     }
 }
 
-// 检查是否需要刷新链接的函数
+// 检查是否需要刷新链接的函数 - 优化KV读取次数
 async function shouldRefreshLink(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return false;
     
-    const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
-    if (!timeString) return true; // 如果没有时间数据，则需要刷新
+    // 一次性读取所有需要的数据
+    const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
+    if (!cacheDataStr) {
+        // 检查旧格式数据
+        const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
+        return !timeString; // 如果没有时间数据，则需要刷新
+    }
     
     try {
-        // 解析简单字符串格式的时间数据
-        const [access, refresh, expire, updatedAt] = timeString.split('|');
+        const cacheData = JSON.parse(cacheDataStr);
+        if (!cacheData._time) {
+            // 如果没有时间数据，则需要刷新
+            return true;
+        }
+        
+        const timeData = cacheData._time;
         const now = Date.now();
-        const refreshTime = parseInt(refresh);
-        const expireTime = parseInt(expire);
+        const refreshTime = timeData.refresh;
+        const expireTime = timeData.expire;
         
         // 三种情况需要刷新：
         // 1. 到了预定刷新时间
@@ -363,7 +373,7 @@ async function shouldRefreshLink(cacheKey, env) {
         // 3. 已经过期
         return now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime || now >= expireTime;
     } catch (e) {
-        console.error(`Error parsing time data for ${cacheKey}:`, e);
+        console.error(`Error parsing cache data for ${cacheKey}:`, e);
         return true;
     }
 }
@@ -372,17 +382,46 @@ async function shouldRefreshLink(cacheKey, env) {
 async function isLinkExpired(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return true;
     
-    const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
-    if (!timeString) return true; // 如果没有时间数据，则认为已过期
+    // 一次性读取所有需要的数据
+    const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
+    if (!cacheDataStr) {
+        // 检查旧格式数据
+        const timeString = await env.DOWNLOAD_CACHE.get(`${cacheKey}_time`);
+        return !timeString; // 如果没有时间数据，则认为已过期
+    }
     
     try {
-        // 解析简单字符串格式的时间数据
-        const [access, refresh, expire, updatedAt] = timeString.split('|');
+        const cacheData = JSON.parse(cacheDataStr);
+        if (!cacheData._time) {
+            // 如果没有时间数据，则认为已过期
+            return true;
+        }
+        
+        const timeData = cacheData._time;
+        const now = Date.now();
+        const expireTime = timeData.expire;
+        const accessTime = timeData.access;
+        
         // 检查是否超过过期时间且24小时内未访问
-        return Date.now() >= parseInt(expire) && (Date.now() - parseInt(access)) >= EXPIRE_INTERVAL;
+        return now >= expireTime && (now - accessTime) >= EXPIRE_INTERVAL;
     } catch (e) {
-        console.error(`Error parsing time data for ${cacheKey}:`, e);
+        console.error(`Error parsing cache data for ${cacheKey}:`, e);
         return true;
+    }
+}
+
+// 获取缓存数据的函数 - 减少重复的KV读取
+async function getCacheData(cacheKey, env) {
+    if (!env.DOWNLOAD_CACHE) return null;
+    
+    const cacheDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
+    if (!cacheDataStr) return null;
+    
+    try {
+        return JSON.parse(cacheDataStr);
+    } catch (e) {
+        console.error(`Error parsing cache data for ${cacheKey}:`, e);
+        return null;
     }
 }
 
@@ -421,31 +460,28 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
     // 然后尝试从KV存储中获取
     if (env.DOWNLOAD_CACHE) {
-        const cachedResultStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-        if (cachedResultStr) {
+        const cachedData = await getCacheData(cacheKey, env);
+        if (cachedData && cachedData.url) {
             try {
-                const cachedResult = JSON.parse(cachedResultStr);
                 // 检查是否需要刷新链接（即使在有效期内也检查链接是否仍然有效）
                 const needRefresh = await shouldRefreshLink(cacheKey, env);
-                const isUrlValid = await checkUrlValidity(cachedResult.url);
+                const isUrlValid = await checkUrlValidity(cachedData.url);
                 
                 if (!needRefresh && isUrlValid) {
-                    if (cachedResult && (Date.now() - cachedResult.timestamp) < (CACHE_TTL * 1000)) {
-                        console.log(`KV cache hit for ${cacheKey}`);
-                        // 更新访问时间
-                        ctx.waitUntil(updateAccessTime(cacheKey, env));
-                        // 更新Cloudflare缓存
-                        const response = Response.redirect(cachedResult.url, 302);
-                        ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
-                        return response;
-                    }
+                    console.log(`KV cache hit for ${cacheKey}`);
+                    // 更新访问时间
+                    ctx.waitUntil(updateAccessTime(cacheKey, env));
+                    // 更新Cloudflare缓存
+                    const response = Response.redirect(cachedData.url, 302);
+                    ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+                    return response;
                 } else if (!isUrlValid) {
                     console.log(`Cached URL is no longer valid for ${cacheKey}`);
                 } else {
                     console.log(`Link needs refresh for ${cacheKey}`);
                 }
             } catch (e) {
-                console.error(`Error parsing cached data for ${cacheKey}:`, e);
+                console.error(`Error processing cached data for ${cacheKey}:`, e);
             }
         }
     }
@@ -494,9 +530,8 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
             // 将结果存入KV缓存
             if (env.DOWNLOAD_CACHE) {
-                // 简化存储操作，避免不必要的Promise.all
-                await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL});
-                await setUnifiedCacheTimes(cacheKey, env);
+                // 使用合并存储函数减少KV操作次数
+                await setCacheData(cacheKey, result, env);
             }
 
             // 存储到Cloudflare缓存
@@ -546,9 +581,8 @@ async function resolveAndCacheFinalUrl(initialUrl, cacheKey, id, pwd, env, cache
             // 更新KV缓存
             try {
                 if (env && env.DOWNLOAD_CACHE) {
-                    // 简化存储操作，避免不必要的Promise.all
-                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL});
-                    await setUnifiedCacheTimes(cacheKey, env);
+                    // 使用合并存储函数减少KV操作次数
+                    await setCacheData(cacheKey, result, env);
                 }
 
                 // 更新Cloudflare缓存
@@ -660,9 +694,8 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
 
             // 更新KV缓存
             if (env.DOWNLOAD_CACHE) {
-                // 简化存储操作，避免不必要的Promise.all
-                await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(result), {expirationTtl: CACHE_TTL});
-                await setUnifiedCacheTimes(cacheKey, env);
+                // 使用合并存储函数减少KV操作次数
+                await setCacheData(cacheKey, result, env);
             }
 
             console.log(`Successfully refreshed download link for ${cacheKey}`);
@@ -714,10 +747,9 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
         // 如果指定了优先级缓存键，优先处理
         if (priorityCacheKey) {
-            const cachedDataStr = await env.DOWNLOAD_CACHE.get(priorityCacheKey);
-            if (cachedDataStr) {
+            const cachedData = await getCacheData(priorityCacheKey, env);
+            if (cachedData) {
                 try {
-                    const cachedData = JSON.parse(cachedDataStr);
                     // 提取id和pwd
                     const parts = priorityCacheKey.replace('download_', '').split('_');
                     const id = parts[0];
@@ -730,7 +762,6 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     console.error(`Error parsing cached data for ${priorityCacheKey}:`, e);
                     // 如果解析失败，删除损坏的缓存项
                     await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
-                    await env.DOWNLOAD_CACHE.delete(`${priorityCacheKey}_time`); // 删除时间数据
                 }
             }
         }
@@ -747,52 +778,75 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const maxKeysToProcess = 100; // 增加到100个键以确保更多链接得到处理
         let processedKeys = 0;
 
-        for (const key of keys.keys) {
-            // 限制处理的键数量
-            if (processedKeys >= maxKeysToProcess) {
-                break;
-            }
-
-            if (key.name.endsWith('_time')) {
-                try {
-                    const timeString = await env.DOWNLOAD_CACHE.get(key.name);
-                    if (timeString) {
-                        // 解析简单字符串格式的时间数据
-                        const [access, refresh, expire, updatedAt] = timeString.split('|');
-                        const cacheKey = key.name.replace('_time', '');
-                        const refreshTime = parseInt(refresh);
-                        const expireTime = parseInt(expire);
-                        const accessTime = parseInt(access);
-
-                        // 检查是否是优先处理项
-                        if (priorityCacheKey && cacheKey === priorityCacheKey) {
-                            // 已经优先处理过了，跳过
-                            continue;
-                        }
-
-                        // 根据刷新时间分类
-                        if (now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime) {
-                            // 需要刷新
-                            if ((now + 3 * 60 * 1000) >= expireTime) {
-                                // 紧急刷新项（3分钟内即将过期或已过期）
-                                urgentRefreshItems.push(cacheKey);
-                            } else {
-                                // 正常刷新项
-                                normalRefreshItems.push(cacheKey);
-                            }
-                            processedKeys++;
-                        }
-                        
-                        // 检查是否过期（24小时内未访问）
-                        if (now >= expireTime) {
-                            // 如果24小时内没有访问过，则标记为过期项
-                            if (now - accessTime >= EXPIRE_INTERVAL) {
-                                expiredItems.push(cacheKey);
-                            }
-                        }
+        // 批量获取缓存数据
+        const batchSize = 20;
+        const cacheDataMap = new Map();
+        
+        // 将所有需要处理的键分批获取
+        for (let i = 0; i < keys.keys.length && processedKeys < maxKeysToProcess; i += batchSize) {
+            const batchKeys = keys.keys.slice(i, i + batchSize).filter(key => !key.name.endsWith('_time'));
+            const batchResults = await Promise.all(
+                batchKeys.map(async (key) => {
+                    try {
+                        const cacheData = await getCacheData(key.name, env);
+                        return { keyName: key.name, cacheData };
+                    } catch (e) {
+                        console.error(`Error fetching cache data for ${key.name}:`, e);
+                        return { keyName: key.name, cacheData: null };
                     }
-                } catch (e) {
-                    console.error(`Error processing time key ${key.name}:`, e);
+                })
+            );
+
+            for (const result of batchResults) {
+                if (result.cacheData) {
+                    cacheDataMap.set(result.keyName, result.cacheData);
+                    processedKeys++;
+                }
+            }
+        }
+
+        // 处理每个缓存项
+        for (const [cacheKey, cacheData] of cacheDataMap.entries()) {
+            try {
+                const timeData = cacheData._time;
+                const refreshTime = timeData.refresh;
+                const expireTime = timeData.expire;
+                const accessTime = timeData.access;
+
+                // 检查是否是优先处理项
+                if (priorityCacheKey && cacheKey === priorityCacheKey) {
+                    // 已经优先处理过了，跳过
+                    continue;
+                }
+
+                // 根据刷新时间分类
+                if (now >= refreshTime || (now + 3 * 60 * 1000) >= expireTime) {
+                    // 需要刷新
+                    if ((now + 3 * 60 * 1000) >= expireTime) {
+                        // 紧急刷新项（3分钟内即将过期或已过期）
+                        urgentRefreshItems.push(cacheKey);
+                    } else {
+                        // 正常刷新项
+                        normalRefreshItems.push(cacheKey);
+                    }
+                }
+                
+                // 检查是否过期（24小时内未访问）
+                if (now >= expireTime) {
+                    // 如果24小时内没有访问过，则标记为过期项
+                    if (now - accessTime >= EXPIRE_INTERVAL) {
+                        expiredItems.push(cacheKey);
+                    }
+                }
+            } catch (e) {
+                console.error(`Error processing cache key ${cacheKey}:`, e);
+                // 如果解析失败，尝试删除损坏的缓存项
+                try {
+                    await env.DOWNLOAD_CACHE.delete(cacheKey);
+                    await env.DOWNLOAD_CACHE.delete(`${cacheKey}_time`);
+                    console.log(`Deleted corrupted cache entry: ${cacheKey}`);
+                } catch (deleteError) {
+                    console.error(`Error deleting corrupted cache entry ${cacheKey}:`, deleteError);
                 }
             }
         }
@@ -800,15 +854,14 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         // 处理过期项（删除）
         for (const cacheKey of expiredItems) {
             await env.DOWNLOAD_CACHE.delete(cacheKey); // 主缓存
-            await env.DOWNLOAD_CACHE.delete(`${cacheKey}_time`); // 时间数据
             console.log(`Expired cache entry deleted: ${cacheKey}`);
         }
 
         // 优先处理紧急刷新项
         for (const cacheKey of urgentRefreshItems) {
             try {
-                const cachedDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-                if (cachedDataStr) {
+                const cachedData = await getCacheData(cacheKey, env);
+                if (cachedData) {
                     // 不需要解析JSON，只需要知道缓存项存在
                     // 提取id和pwd
                     const parts = cacheKey.replace('download_', '').split('_');
@@ -843,8 +896,8 @@ async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         // 处理正常刷新项
         for (const cacheKey of normalRefreshItems) {
             try {
-                const cachedDataStr = await env.DOWNLOAD_CACHE.get(cacheKey);
-                if (cachedDataStr) {
+                const cachedData = await getCacheData(cacheKey, env);
+                if (cachedData) {
                     // 不需要解析JSON，只需要知道缓存项存在
                     // 提取id和pwd
                     const parts = cacheKey.replace('download_', '').split('_');
@@ -941,42 +994,53 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
         const path = url.pathname;
+        const pathParts = path.split('/').filter(part => part !== '');
+        const id = pathParts[0];
+        const pwd = pathParts[1];
 
-        // 处理根路径
+        // 根路径显示服务状态
         if (path === '/') {
-            return handleRootRequest();
+            return new Response(JSON.stringify({
+                code: 200,
+                msg: '蓝奏云直链解析服务正在运行',
+                time: new Date().toISOString()
+            }), {
+                headers: {'Content-Type': 'application/json;charset=UTF-8'}
+            });
         }
 
-        // 处理健康检查
+        // 健康检查端点
         if (path === '/health') {
-            return handleHealthRequest();
+            return new Response(JSON.stringify({
+                status: 'healthy',
+                timestamp: Date.now()
+            }), {
+                headers: {'Content-Type': 'application/json;charset=UTF-8'}
+            });
         }
 
-        // 处理自动刷新请求
+        // 刷新端点 - 用于触发所有过期链接的刷新
         if (path === '/refresh') {
-            return await handleRefreshRequest(env);
-        }
-
-        // 检查是否需要刷新链接（降低触发概率并增加智能判断）
-        // 只有在非GET请求或者有特定查询参数时才触发检查
-        const shouldCheckRefresh = Math.random() < 0.05; // 降低到5%的概率
-        if (shouldCheckRefresh) {
+            // 异步执行刷新任务
             ctx.waitUntil(checkAndRefreshLinks(env));
+            return new Response(JSON.stringify({
+                code: 200,
+                msg: '刷新任务已启动'
+            }), {
+                headers: {'Content-Type': 'application/json;charset=UTF-8'}
+            });
         }
 
         // 处理下载请求
-        const pathParts = path.split('/').filter(part => part !== '');
-        if (pathParts.length === 1) {
-            // 无密码文件: /:id
-            const id = pathParts[0];
-            return await handleDownloadRequest(id, null, env, request, ctx);
-        } else if (pathParts.length === 2) {
-            // 有密码文件: /:id/:pwd
-            const id = pathParts[0];
-            const pwd = pathParts[1];
+        if (id) {
+            // 按需刷新缓存（降低触发概率）
+            if (Math.random() < 0.05) {  // 5%的概率触发刷新
+                ctx.waitUntil(checkAndRefreshLinks(env));
+            }
+            
             return await handleDownloadRequest(id, pwd, env, request, ctx);
         }
 
-        return new Response('Not Found', { status: 404 });
+        return new Response('Invalid request path', {status: 400});
     }
 };
