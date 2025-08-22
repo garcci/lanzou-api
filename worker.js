@@ -161,8 +161,20 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                         const fileMatch = fileMatchs[1].match(/\/ajaxm\.php\?file=(\d+)/);
                         if (fileMatch && fileMatch[1]) {
                             const fileId = fileMatch[1];
-                            const wp_sign = fnContent.match(/wp_sign\s*=\s*'([^']+)'/)[1];
-                            const ajaxdata = fnContent.match(/ajaxdata\s*=\s*'([^']+)'/)[1];
+                            // 添加安全检查，确保匹配存在
+                            const wpSignMatch = fnContent.match(/wp_sign\s*=\s*'([^']+)'/);
+                            const ajaxDataMatch = fnContent.match(/ajaxdata\s*=\s*'([^']+)'/);
+                            
+                            if (!wpSignMatch || !wpSignMatch[1]) {
+                                throw new Error('wp_sign not found in fn content');
+                            }
+                            
+                            if (!ajaxDataMatch || !ajaxDataMatch[1]) {
+                                throw new Error('ajaxdata not found in fn content');
+                            }
+                            
+                            const wp_sign = wpSignMatch[1];
+                            const ajaxdata = ajaxDataMatch[1];
                             const postData = {
                                 action: "downprocess",
                                 websignkey: ajaxdata,
@@ -173,7 +185,13 @@ async function extractSignAndFileId(fileId, retryCount = 0) {
                                 ves: "1"
                             };
                             const result = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-                            const resultObj = JSON.parse(result);
+                            let resultObj;
+                            try {
+                                resultObj = JSON.parse(result);
+                            } catch (parseError) {
+                                console.error('Failed to parse JSON response:', result);
+                                throw new Error('Invalid JSON response from server');
+                            }
 
                             if (resultObj && resultObj.url) {
                                 // 构造初始下载链接
@@ -445,16 +463,20 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
     if (cachedResponse) {
         console.log(`Cloudflare cache hit for ${cacheKey}`);
-        // 检查是否需要刷新链接
-        const needRefresh = await shouldRefreshLink(cacheKey, env);
-        if (!needRefresh) {
-            // 不需要刷新，直接返回缓存结果
-            // 更新访问时间
-            ctx.waitUntil(updateAccessTime(cacheKey, env));
-            return cachedResponse;
-        } else {
-            console.log(`Link needs refresh for ${cacheKey}`);
-            // 需要刷新，继续执行下面的逻辑
+        try {
+            // 检查是否需要刷新链接
+            const needRefresh = await shouldRefreshLink(cacheKey, env);
+            if (!needRefresh) {
+                // 不需要刷新，直接返回缓存结果
+                // 更新访问时间
+                ctx.waitUntil(updateAccessTime(cacheKey, env));
+                return cachedResponse;
+            } else {
+                console.log(`Link needs refresh for ${cacheKey}`);
+                // 需要刷新，继续执行下面的逻辑
+            }
+        } catch (error) {
+            console.error(`Error checking if link needs refresh for ${cacheKey}:`, error);
         }
     }
 
@@ -509,7 +531,13 @@ async function handleDownloadRequest(id, pwd, env, request, ctx) {
             };
 
             const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-            const resultObj = JSON.parse(response);
+            let resultObj;
+            try {
+                resultObj = JSON.parse(response);
+            } catch (parseError) {
+                console.error('Failed to parse JSON response:', response);
+                throw new Error('Invalid JSON response from server');
+            }
 
             if (resultObj && resultObj.url) {
                 // 构造初始下载链接
@@ -647,7 +675,13 @@ async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
 
             try {
                 const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-                const resultObj = JSON.parse(response);
+                let resultObj;
+                try {
+                    resultObj = JSON.parse(response);
+                } catch (parseError) {
+                    console.error(`Failed to parse JSON response for ${cacheKey}:`, response);
+                    throw new Error('Invalid JSON response from server');
+                }
 
                 if (resultObj && resultObj.url) {
                     // 构造初始下载链接
@@ -992,55 +1026,67 @@ async function handleRefreshRequest(env) {
 // 主处理函数
 export default {
     async fetch(request, env, ctx) {
-        const url = new URL(request.url);
-        const path = url.pathname;
-        const pathParts = path.split('/').filter(part => part !== '');
-        const id = pathParts[0];
-        const pwd = pathParts[1];
+        try {
+            const url = new URL(request.url);
+            const path = url.pathname;
+            const pathParts = path.split('/').filter(part => part !== '');
+            const id = pathParts[0];
+            const pwd = pathParts[1];
 
-        // 根路径显示服务状态
-        if (path === '/') {
-            return new Response(JSON.stringify({
-                code: 200,
-                msg: '蓝奏云直链解析服务正在运行',
-                time: new Date().toISOString()
-            }), {
-                headers: {'Content-Type': 'application/json;charset=UTF-8'}
-            });
-        }
-
-        // 健康检查端点
-        if (path === '/health') {
-            return new Response(JSON.stringify({
-                status: 'healthy',
-                timestamp: Date.now()
-            }), {
-                headers: {'Content-Type': 'application/json;charset=UTF-8'}
-            });
-        }
-
-        // 刷新端点 - 用于触发所有过期链接的刷新
-        if (path === '/refresh') {
-            // 异步执行刷新任务
-            ctx.waitUntil(checkAndRefreshLinks(env));
-            return new Response(JSON.stringify({
-                code: 200,
-                msg: '刷新任务已启动'
-            }), {
-                headers: {'Content-Type': 'application/json;charset=UTF-8'}
-            });
-        }
-
-        // 处理下载请求
-        if (id) {
-            // 按需刷新缓存（降低触发概率）
-            if (Math.random() < 0.05) {  // 5%的概率触发刷新
-                ctx.waitUntil(checkAndRefreshLinks(env));
+            // 根路径显示服务状态
+            if (path === '/') {
+                return new Response(JSON.stringify({
+                    code: 200,
+                    msg: '蓝奏云直链解析服务正在运行',
+                    time: new Date().toISOString()
+                }), {
+                    headers: {'Content-Type': 'application/json;charset=UTF-8'}
+                });
             }
-            
-            return await handleDownloadRequest(id, pwd, env, request, ctx);
-        }
 
-        return new Response('Invalid request path', {status: 400});
+            // 健康检查端点
+            if (path === '/health') {
+                return new Response(JSON.stringify({
+                    status: 'healthy',
+                    timestamp: Date.now()
+                }), {
+                    headers: {'Content-Type': 'application/json;charset=UTF-8'}
+                });
+            }
+
+            // 刷新端点 - 用于触发所有过期链接的刷新
+            if (path === '/refresh') {
+                // 异步执行刷新任务
+                ctx.waitUntil(checkAndRefreshLinks(env));
+                return new Response(JSON.stringify({
+                    code: 200,
+                    msg: '刷新任务已启动'
+                }), {
+                    headers: {'Content-Type': 'application/json;charset=UTF-8'}
+                });
+            }
+
+            // 处理下载请求
+            if (id) {
+                // 按需刷新缓存（降低触发概率）
+                if (Math.random() < 0.05) {  // 5%的概率触发刷新
+                    ctx.waitUntil(checkAndRefreshLinks(env));
+                }
+                
+                return await handleDownloadRequest(id, pwd, env, request, ctx);
+            }
+
+            return new Response('Invalid request path', {status: 400});
+        } catch (error) {
+            console.error('Unhandled error in fetch handler:', error);
+            return new Response(JSON.stringify({
+                code: 500,
+                msg: 'Internal server error',
+                error: error.message
+            }), {
+                status: 500,
+                headers: {'Content-Type': 'application/json;charset=UTF-8'}
+            });
+        }
     }
 };
