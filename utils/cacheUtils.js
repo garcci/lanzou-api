@@ -1,10 +1,12 @@
 // utils/cacheUtils.js
+import memoryCache from './memoryCache.js';
 
 // 创建缓存实例
 // 支持从环境变量读取配置参数，实现动态调整刷新策略
 const CACHE_TTL = 15 * 60; // 15分钟缓存时间，与下载链接失效时间一致
 const REFRESH_INTERVAL = 15 * 60 * 1000; // 15分钟刷新间隔（与 cron trigger 同步）
 const URGENT_REFRESH_THRESHOLD = 3 * 60 * 1000; // 3分钟内即将过期的紧急刷新阈值
+const MEMORY_CACHE_TTL = 5 * 60 * 1000; // 内存缓存5分钟过期时间
 
 // 统一时间管理函数
 export function getUnifiedTimeConfig(env) {
@@ -29,6 +31,9 @@ export async function setCacheData(cacheKey, data, env) {
                 refresh: timeConfig.refresh
             }
         };
+
+        // 存储到内存缓存
+        memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
 
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.put === 'function') {
@@ -113,20 +118,43 @@ export async function getCacheData(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return null;
 
     try {
+        // 首先尝试从内存缓存获取
+        const memoryCachedData = memoryCache.get(cacheKey);
+        if (memoryCachedData) {
+            return memoryCachedData;
+        }
+
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.get === 'function') {
             const cacheData = await env.DOWNLOAD_CACHE.get(cacheKey);
             if (!cacheData) return null;
 
             // 如果返回的是字符串，尝试解析为 JSON
+            let parsedData;
             if (typeof cacheData === 'string') {
-                return JSON.parse(cacheData);
+                parsedData = JSON.parse(cacheData);
+            } else {
+                parsedData = cacheData;
             }
-            return cacheData;
+
+            // 存储到内存缓存
+            memoryCache.set(cacheKey, parsedData, MEMORY_CACHE_TTL);
+            
+            return parsedData;
         }
         return null;
     } catch (e) {
         console.error(`Error parsing cache data for ${cacheKey}:`, e);
         return null;
     }
+}
+
+// 从内存缓存中删除数据
+export function deleteFromMemoryCache(cacheKey) {
+    return memoryCache.delete(cacheKey);
+}
+
+// 清理内存缓存中的过期项
+export function cleanupMemoryCache() {
+    return memoryCache.cleanup();
 }

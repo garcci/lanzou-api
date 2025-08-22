@@ -1,7 +1,7 @@
 // services/downloadService.js
 import { extractSignAndFileId, followRedirect, checkUrlValidity } from '../utils/linkUtils.js';
 import { postRequest } from '../utils/httpUtils.js';
-import { getCacheData, setCacheData, shouldRefreshLink } from '../utils/cacheUtils.js';
+import { getCacheData, setCacheData, shouldRefreshLink, deleteFromMemoryCache } from '../utils/cacheUtils.js';
 
 const LANZOU_DOMAIN = "lanzoux.com";
 
@@ -36,7 +36,7 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
         }
     }
 
-    // 然后尝试从KV存储中获取
+    // 然后尝试从内存缓存和KV存储中获取
     if (env.DOWNLOAD_CACHE) {
         const cachedData = await getCacheData(cacheKey, env);
         if (cachedData && cachedData.url) {
@@ -46,13 +46,15 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 const isUrlValid = await checkUrlValidity(cachedData.url);
 
                 if (!needRefresh && isUrlValid) {
-                    console.log(`KV cache hit for ${cacheKey}`);
+                    console.log(`Cache hit for ${cacheKey} (memory or KV)`);
                     // 更新Cloudflare缓存
                     const response = Response.redirect(cachedData.url, 302);
                     ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
                     return response;
                 } else if (!isUrlValid) {
                     console.log(`Cached URL is no longer valid for ${cacheKey}`);
+                    // 从内存缓存中删除无效数据
+                    deleteFromMemoryCache(cacheKey);
                 } else {
                     console.log(`Link needs refresh for ${cacheKey}`);
                 }
@@ -124,7 +126,7 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 pwd: pwd || null
             };
 
-            // 将结果存入KV缓存
+            // 将结果存入KV缓存和内存缓存
             if (env.DOWNLOAD_CACHE) {
                 // 使用合并存储函数减少KV操作次数
                 await setCacheData(cacheKey, result, env);
@@ -246,7 +248,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
                 pwd: pwd || null
             };
 
-            // 更新KV缓存
+            // 更新KV缓存和内存缓存
             if (env.DOWNLOAD_CACHE) {
                 // 使用合并存储函数减少KV操作次数
                 await setCacheData(cacheKey, result, env);

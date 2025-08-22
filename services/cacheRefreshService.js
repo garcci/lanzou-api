@@ -1,5 +1,5 @@
 // services/cacheRefreshService.js
-import { getCacheData, setCacheData } from '../utils/cacheUtils.js';
+import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache } from '../utils/cacheUtils.js';
 import { refreshDownloadLink } from './downloadService.js';
 
 // 检查并刷新过期链接的任务函数
@@ -29,6 +29,8 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
                         await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
                     }
+                    // 从内存缓存中删除
+                    deleteFromMemoryCache(priorityCacheKey);
                 }
             }
         }
@@ -120,6 +122,8 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         await env.DOWNLOAD_CACHE.delete(`${cacheKey}_time`);
                         console.log(`Deleted corrupted cache entry: ${cacheKey}`);
                     }
+                    // 从内存缓存中删除
+                    deleteFromMemoryCache(cacheKey);
                 } catch (deleteError) {
                     console.error(`Error deleting corrupted cache entry ${cacheKey}:`, deleteError);
                 }
@@ -133,6 +137,8 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
             if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
                 await env.DOWNLOAD_CACHE.delete(cacheKey); // 主缓存
             }
+            // 从内存缓存中删除
+            deleteFromMemoryCache(cacheKey);
             console.log(`Expired cache entry deleted: ${cacheKey}`);
         }
 
@@ -207,6 +213,10 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 console.error(`Error refreshing normal item ${cacheKey}:`, e);
             }
         }
+
+        // 清理内存缓存中的过期项
+        const cleanedCount = cleanupMemoryCache();
+        console.log(`Cleaned ${cleanedCount} expired items from memory cache`);
 
     } catch (error) {
         console.error('Error in checkAndRefreshLinks:', error);
