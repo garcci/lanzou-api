@@ -6,14 +6,14 @@ compatibility_date = "2025-08-21"
 command = ""
 
 [vars]
-# BATCH_SIZE = "10"  # 批处理大小，用于控制批量操作的批次大小
+# BATCH_SIZE = "5"  # 批处理大小，用于控制批量操作的批次大小
 # REFRESH_INTERVAL = "900000"  # 15分钟 (毫秒)
 # URGENT_THRESHOLD = "180000"  # 3分钟 (毫秒)
-# MAX_KEYS_TO_PROCESS = "100"
+# MAX_KEYS_TO_PROCESS = "50"
 
 [triggers]
 crons = ["*/12 * * * *"] # 每12分钟执行一次
 
 [[kv_namespaces]]
 binding = "DOWNLOAD_CACHE"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+id = "9e6cde26fb8c45adb1f1771a00c6a375"

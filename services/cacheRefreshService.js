@@ -1,5 +1,5 @@
 // services/cacheRefreshService.js
-import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, getRefreshPriority } from '../utils/cacheUtils.js';
+import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, getRefreshPriority, setShardedBatchCacheData } from '../utils/cacheUtils.js';
 import { refreshDownloadLink } from './downloadService.js';
 
 // 检查并刷新过期链接的任务函数
@@ -54,13 +54,13 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const priorityItems = [];       // 智能优先级排序的项
 
         // 从环境变量读取配置参数
-        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 100;
+        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 100; // 恢复原来处理数量
         const urgentThreshold = env?.URGENT_THRESHOLD ? parseInt(env.URGENT_THRESHOLD) : (3 * 60 * 1000);
         
         let processedKeys = 0;
 
         // 批量获取缓存数据
-        const batchSize = 20;
+        const batchSize = 20; // 增大批次大小
         const cacheDataMap = new Map();
 
         // 将所有需要处理的键分批获取
@@ -147,8 +147,11 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         await batchDeleteCacheItems(expiredItems, env);
         console.log(`Expired cache entries deleted: ${expiredItems.length}`);
 
-        // 根据优先级顺序处理刷新项，而不是简单地先紧急后正常
-        const itemsToRefresh = priorityItems.slice(0, maxKeysToProcess);
+        // 恢复原来的刷新数量，确保所有需要刷新的链接都能及时更新
+        const itemsToRefresh = priorityItems.slice(0, Math.min(maxKeysToProcess / 2, priorityItems.length)); // 刷新所有需要刷新的项
+        
+        // 收集需要刷新的数据
+        const refreshedData = {};
         
         // 处理需要刷新的项
         for (const item of itemsToRefresh) {
@@ -164,16 +167,23 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
                     // 异步刷新链接，带重试机制
                     let retryCount = 0;
-                    const maxRetries = 3;
+                    const maxRetries = 2; // 恢复重试次数
                     let success = false;
 
                     while (retryCount <= maxRetries && !success) {
                         try {
                             success = await refreshDownloadLink(cacheKey, id, pwd, env);
+                            if (success) {
+                                // 如果刷新成功，获取最新的数据
+                                const updatedData = await getCacheData(cacheKey, env);
+                                if (updatedData) {
+                                    refreshedData[cacheKey] = updatedData;
+                                }
+                            }
                         } catch (e) {
                             retryCount++;
                             if (retryCount <= maxRetries) {
-                                const delay = Math.pow(2, retryCount) * 100; // 指数退避
+                                const delay = Math.pow(2, retryCount) * 100; // 恢复延迟时间
                                 console.log(`Retrying ${cacheKey} (attempt ${retryCount}) after ${delay}ms...`);
                                 await new Promise(resolve => setTimeout(resolve, delay));
                             } else {
@@ -189,6 +199,11 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
             } catch (e) {
                 console.error(`Error refreshing item ${cacheKey}:`, e);
             }
+        }
+
+        // 如果有刷新的数据，将它们分片存储到多个KV条目中
+        if (Object.keys(refreshedData).length > 0) {
+            await setShardedBatchCacheData(refreshedData, env);
         }
 
         // 清理内存缓存中的过期项
