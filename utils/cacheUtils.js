@@ -111,6 +111,47 @@ export async function setCacheData(cacheKey, data, env) {
     return null;
 }
 
+// 批量存储数据到KV的函数 - 显著减少KV操作次数
+export async function batchSetCacheData(cacheDataMap, env) {
+    if (!env.DOWNLOAD_CACHE) return;
+    
+    // 从环境变量读取批处理大小，默认为10
+    const batchSize = env?.BATCH_SIZE ? parseInt(env.BATCH_SIZE) : 10;
+    
+    // 将所有数据分批处理
+    const entries = Array.from(cacheDataMap.entries());
+    
+    // 分批执行存储操作
+    for (let i = 0; i < entries.length; i += batchSize) {
+        const batch = entries.slice(i, i + batchSize);
+        
+        // 并行处理每一批数据
+        await Promise.all(batch.map(async ([cacheKey, data]) => {
+            try {
+                const timeConfig = getUnifiedTimeConfig(env);
+                
+                // 合并主数据和时间数据
+                const cacheData = {
+                    ...data,
+                    _time: {
+                        refresh: timeConfig.refresh
+                    }
+                };
+                
+                // 存储到内存缓存
+                memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
+                
+                // 存储到KV
+                if (typeof env.DOWNLOAD_CACHE.put === 'function') {
+                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
+                }
+            } catch (error) {
+                console.error(`Error storing cache data for ${cacheKey}:`, error);
+            }
+        }));
+    }
+}
+
 // 检查是否需要刷新链接的函数 - 优化KV读取次数
 export async function shouldRefreshLink(cacheKey, env) {
     if (!env.DOWNLOAD_CACHE) return false;

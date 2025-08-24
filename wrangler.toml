@@ -1,25 +1,19 @@
 name = "lanzou-direct-link"
 main = "worker.js"
-compatibility_date = "2023-10-01"
-
-# 添加 Cron Triggers 配置
-# 使用多个 cron triggers 实现动态调整刷新策略
-[triggers]
-# 主要的刷新任务，每15分钟执行一次（调整频率）
-crons = ["*/15 * * * *"]
-
-# 添加一个用于统计分析的每日任务
-# crons = ["*/15 * * * *", "0 2 * * *"]
+compatibility_date = "2025-08-21"
 
 [build]
 command = ""
 
 [vars]
-# 可配置的环境变量，用于动态调整刷新策略
+# BATCH_SIZE = "10"  # 批处理大小，用于控制批量操作的批次大小
 # REFRESH_INTERVAL = "900000"  # 15分钟 (毫秒)
 # URGENT_THRESHOLD = "180000"  # 3分钟 (毫秒)
 # MAX_KEYS_TO_PROCESS = "100"
 
+[triggers]
+crons = ["*/12 * * * *"] # 每12分钟执行一次
+
 [[kv_namespaces]]
 binding = "DOWNLOAD_CACHE"
-id = "9e6cde26fb8c45adb1f1771a00c6a375"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

@@ -143,15 +143,9 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         priorityItems.sort((a, b) => b.priority - a.priority);
         console.log(`Top 5 priority items:`, priorityItems.slice(0, 5));
 
-        // 处理过期项（删除）
-        for (const cacheKey of expiredItems) {
-            if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
-                await env.DOWNLOAD_CACHE.delete(cacheKey); // 主缓存
-            }
-            // 从内存缓存中删除
-            deleteFromMemoryCache(cacheKey);
-            console.log(`Expired cache entry deleted: ${cacheKey}`);
-        }
+        // 批量处理过期项（删除）
+        await batchDeleteCacheItems(expiredItems, env);
+        console.log(`Expired cache entries deleted: ${expiredItems.length}`);
 
         // 根据优先级顺序处理刷新项，而不是简单地先紧急后正常
         const itemsToRefresh = priorityItems.slice(0, maxKeysToProcess);
@@ -203,5 +197,32 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
     } catch (error) {
         console.error('Error in checkAndRefreshLinks:', error);
+    }
+}
+
+// 批量删除缓存项的函数
+async function batchDeleteCacheItems(cacheKeys, env) {
+    if (!env.DOWNLOAD_CACHE || !Array.isArray(cacheKeys) || cacheKeys.length === 0) return;
+    
+    // 从环境变量读取批处理大小，默认为10
+    const batchSize = env?.BATCH_SIZE ? parseInt(env.BATCH_SIZE) : 10;
+    
+    // 分批执行删除操作
+    for (let i = 0; i < cacheKeys.length; i += batchSize) {
+        const batch = cacheKeys.slice(i, i + batchSize);
+        
+        // 并行处理每一批删除操作
+        await Promise.all(batch.map(async (cacheKey) => {
+            try {
+                if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
+                    await env.DOWNLOAD_CACHE.delete(cacheKey);
+                }
+                // 从内存缓存中删除
+                deleteFromMemoryCache(cacheKey);
+                console.log(`Expired cache entry deleted: ${cacheKey}`);
+            } catch (error) {
+                console.error(`Error deleting cache entry ${cacheKey}:`, error);
+            }
+        }));
     }
 }
