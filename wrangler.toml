@@ -17,3 +17,8 @@ crons = ["*/12 * * * *"] # 每12分钟执行一次
 [[kv_namespaces]]
 binding = "DOWNLOAD_CACHE"
 id = "9e6cde26fb8c45adb1f1771a00c6a375"
+
+[[d1_databases]]
+binding = "DB" # available in your Worker on env.DB
+database_name = "lanzou_cache"
+database_id = "ccb64416-6262-469a-b7ab-d9d3c53f0f6a"

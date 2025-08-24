@@ -1,146 +1,132 @@
-# 蓝奏云直链解析服务
+# 蓝奏云直链解析服务 (Cloudflare Worker 版本)
 
-这是一个用于解析蓝奏云分享链接并获取直链的 Cloudflare Worker 服务。
+这是一个基于 Cloudflare Worker 的蓝奏云直链解析服务，可以解析蓝奏云的分享链接并获取直链地址。
 
-## 功能特性
+## 功能特点
 
 - 解析蓝奏云分享链接获取直链
-- 支持带密码和不带密码的文件
-- 自动缓存解析结果，提高响应速度
-- 自动刷新过期链接，保持链接有效性
-- 实时验证链接有效性，确保每时每刻请求到的下载链接都是有效的
+- 三级缓存机制（内存缓存 + D1数据库 + KV存储）
+- 自动刷新过期链接
+- 支持带密码的分享链接
+- 支持定时任务自动刷新
+- 支持Cloudflare缓存加速
+- 请求合并机制，避免重复处理相同ID的并发请求
+- 智能错误处理和重试策略
+
+## 部署方式
+
+### 1. 准备工作
+
+1. 安装 [Wrangler CLI](https://developers.cloudflare.com/workers/cli-wrangler/install-update)
+2. 登录 Cloudflare 账户: `wrangler login`
+
+### 2. 创建所需资源
+
+1. 创建 KV Namespace:
+   ```bash
+   wrangler kv:namespace create "DOWNLOAD_CACHE"
+   ```
+   将返回的 ID 填入 `wrangler.toml` 文件中
+
+2. 创建 D1 数据库:
+   ```bash
+   wrangler d1 create lanzou_cache
+   ```
+   将返回的数据库信息填入 `wrangler.toml` 文件中
+
+3. 初始化 D1 数据库表:
+   ```bash
+   wrangler d1 execute lanzou_cache --file=./schema.sql
+   ```
+
+### 3. 配置文件
+
+更新 `wrangler.toml` 文件中的配置:
+- KV Namespace ID
+- D1 数据库信息
+
+### 4. 部署
+
+```bash
+npm run deploy
+```
 
 ## 使用方法
 
-### 基本用法
+### 解析链接
 
-- 无密码文件: `GET /:id`
-- 有密码文件: `GET /:id/:pwd`
-
-### 示例
-
-- 无密码文件: `GET /iabc123d`
-- 有密码文件: `GET /iabc123d/password123`
-
-## API 端点
-
-- `/` - 根路径，显示服务状态
-- `/health` - 健康检查端点
-- `/refresh` - 自动刷新端点（用于触发所有过期链接的刷新）
-
-## 自动刷新机制
-
-系统通过以下几种方式自动刷新链接：
-
-1. 在处理请求时实时验证链接有效性，如果链接即将失效则立即刷新
-2. 通过 Worker 内置的 Cron Triggers 每12分钟自动执行刷新任务
-3. 通过 GitHub Actions 每12分钟调用一次 [/refresh](#/refresh) 端点（备用方案）
-
-下载链接的有效期为15分钟，系统会在链接失效前自动刷新以确保链接始终有效。
-
-## 部署
-
-1. 克隆此仓库
-2. 安装依赖: `npm install`
-3. 配置 `wrangler.toml` 文件
-4. 部署到 Cloudflare Workers: `npm run deploy`
-
-## GitHub Action 配置
-
-要启用每12分钟自动刷新功能，需要在 GitHub 仓库中设置以下 secret：
-
-- `REFRESH_URL`: 刷新接口的完整URL，例如 `https://your-worker.your-subdomain.workers.dev/refresh`
-
-配置步骤：
-1. 转到 GitHub 仓库的 Settings 页面
-2. 点击左侧的 "Secrets and variables" -> "Actions"
-3. 点击 "New repository secret" 按钮
-4. Name 设置为 `REFRESH_URL`
-5. Value 设置为您的 Worker 刷新接口地址，例如 `https://lanzou-direct-link.your-subdomain.workers.dev/refresh`
-6. 点击 "Add secret" 完成设置
-
-## Cron Triggers 配置（推荐）
-
-Cloudflare Workers 支持内置的定时任务功能，这是推荐的自动刷新方式：
-
-1. 在 `wrangler.toml` 文件中已配置了 Cron Triggers：
-   ```toml
-   [triggers]
-   crons = ["*/12 * * * *"] # 每12分钟执行一次
-   ```
-
-2. 部署 Worker 后，定时任务会自动启用
-
-3. 无需额外配置，比 GitHub Actions 更可靠
-
-## 其他定时任务方案
-
-除了 GitHub Actions 和 Cron Triggers，您还可以使用以下方式定时触发刷新：
-
-### 在线 Cron 服务
-可以使用在线的 Cron 服务定期访问 [/refresh](#/refresh) 端点：
-- [cron-job.org](https://cron-job.org)
-- [easycron.com](https://www.easycron.com)
-- [setcronjob.com](https://www.setcronjob.com)
-
-### 云函数服务
-使用云函数服务（如 AWS Lambda、Google Cloud Functions 等）创建定时任务，定期向 [/refresh](#/refresh) 端点发送请求。
-
-### 自有服务器
-如果您有自己的服务器，可以使用系统的 cron 任务来定期触发刷新：
-```bash
-# 每12分钟执行一次
-*/12 * * * * curl -s https://your-worker.your-subdomain.workers.dev/refresh > /dev/null
+```
+GET /{id}[/{password}]
 ```
 
-## 故障排除
+示例:
+- 无密码链接: `GET /iXXXXXX`
+- 带密码链接: `GET /iXXXXXX/password`
 
-如果定时任务执行失败，请按以下步骤排查：
+### 刷新缓存
 
-1. 确保在 GitHub 仓库设置中正确设置了 `REFRESH_URL` secret（如果使用 GitHub Actions）
-   - 检查路径：Settings -> Secrets and variables -> Actions
-   - 确保 secret 名称是 `REFRESH_URL`，值是正确的刷新接口地址
+```
+GET /refresh
+```
 
-2. 手动访问刷新接口确认其正常工作：
-   ```bash
-   curl https://your-worker.your-subdomain.workers.dev/refresh
-   ```
+手动触发刷新任务
 
-3. 检查 GitHub Actions 执行日志（如果使用 GitHub Actions）：
-   - 转到仓库的 Actions 页面
-   - 查看 "Refresh Download Links" 工作流的执行记录
-   - 检查具体的错误信息
+### 健康检查
 
-4. 检查 Cloudflare Worker 的日志以获取更多错误信息
+```
+GET /health
+```
 
-5. 确保 Worker 正常运行且没有触发频率限制
+检查服务状态
 
-常见问题及解决方案：
+## 缓存机制
 
-1. **定时任务没有自动执行**
-   - 如果使用 GitHub Actions，确认您的仓库不是私有仓库（私有仓库可能需要额外配置）
-   - 检查仓库中是否有最近的提交，GitHub Actions 通常在有提交时更容易触发
-   - 可以通过手动触发工作流来测试是否正常工作
-   - 我们已添加了一个备用的每15分钟执行一次的工作流作为冗余机制
-   - 推荐使用 Cloudflare Workers 的 Cron Triggers，它更加可靠
+本服务采用三级缓存机制：
 
-2. **"REFRESH_URL secret is not set" 错误**
-   - 按照上述步骤正确设置 secret
+1. **内存缓存** - 最快的缓存，5分钟过期
+2. **D1数据库** - 持久化存储，15分钟过期
+3. **KV存储** - 持久化存储，15分钟过期
 
-3. **请求超时或连接失败**
-   - 检查 Worker URL 是否正确
-   - 确保 Worker 正在运行
-   - 检查防火墙或网络设置
+数据读取顺序：内存缓存 → D1数据库 → KV存储 → 请求新数据
 
-4. **GitHub Actions 限制**
-   - 免费账户的 GitHub Actions 有使用限制
-   - 如果您的仓库使用超出了限制，可能会影响定时任务的执行
-   - 可以通过升级到付费账户或减少执行频率来解决
+## 请求合并机制
 
-5. **工作流调度延迟**
-   - GitHub Actions 在高负载期间可能会延迟执行定时任务
-   - 这种情况通常在每小时开始时更常见
-   - 可以通过手动触发工作流来立即执行刷新任务
+为了避免在短时间内收到多个相同ID的请求时重复处理，服务实现了请求合并机制：
+
+- 当多个相同ID的请求同时到达时，只会发起一次实际的解析请求
+- 其他请求会等待第一个请求完成后，直接使用其结果
+- 这可以显著减少对蓝奏云服务器的请求压力，提高响应速度
+
+## 错误处理和重试策略
+
+服务实现了智能的错误处理和重试策略，针对不同类型的错误采用不同的处理方式：
+
+1. **网络错误** - 立即重试，最多3次
+2. **超时错误** - 指数退避重试，最多3次
+3. **服务器错误(5xx)** - 指数退避重试，最多2次
+4. **客户端错误(4xx)** - 不重试
+5. **解析错误** - 少量重试
+
+所有重试都添加了抖动（jitter）以避免惊群效应，并限制最大延迟时间为10秒。
+
+## 定时任务
+
+默认每12分钟执行一次刷新任务，检查并更新即将过期的链接。
+
+## 环境变量配置
+
+| 变量名 | 默认值 | 说明 |
+|-------|--------|------|
+| BATCH_SIZE | 10 | 批处理大小 |
+| REFRESH_INTERVAL | 900000 | 刷新间隔（毫秒） |
+| URGENT_THRESHOLD | 180000 | 紧急刷新阈值（毫秒） |
+| MAX_KEYS_TO_PROCESS | 50 | 每次处理的最大键数 |
+
+## 本地开发
+
+```bash
+npm run dev
+```
 
 ## 许可证
 

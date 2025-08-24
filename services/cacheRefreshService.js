@@ -1,6 +1,6 @@
-// services/cacheRefreshService.js
 import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, getRefreshPriority, setShardedBatchCacheData } from '../utils/cacheUtils.js';
 import { refreshDownloadLink } from './downloadService.js';
+import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from '../utils/errorUtils.js';
 
 // 检查并刷新过期链接的任务函数
 export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
@@ -27,7 +27,11 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     console.error(`Error parsing cached data for ${priorityCacheKey}:`, e);
                     // 如果解析失败，删除损坏的缓存项
                     if (typeof env.DOWNLOAD_CACHE.delete === 'function') {
-                        await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
+                        try {
+                            await env.DOWNLOAD_CACHE.delete(priorityCacheKey);
+                        } catch (deleteError) {
+                            console.error(`Error deleting corrupted cache entry ${priorityCacheKey}:`, deleteError);
+                        }
                     }
                     // 从内存缓存中删除
                     deleteFromMemoryCache(priorityCacheKey);
@@ -38,7 +42,12 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         // 兼容 Cloudflare KV 和本地模拟的 KV
         let keys = { keys: [] };
         if (typeof env.DOWNLOAD_CACHE.list === 'function') {
-            keys = await env.DOWNLOAD_CACHE.list();
+            try {
+                keys = await env.DOWNLOAD_CACHE.list();
+            } catch (listError) {
+                console.error('Error listing KV keys:', listError);
+                return;
+            }
         } else if (env.DOWNLOAD_CACHE.store) {
             // 本地模拟环境
             const keyArray = Array.from(env.DOWNLOAD_CACHE.store.keys())
@@ -167,10 +176,10 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
                     // 异步刷新链接，带重试机制
                     let retryCount = 0;
-                    const maxRetries = 2; // 恢复重试次数
                     let success = false;
+                    let retryErrorType = null;
 
-                    while (retryCount <= maxRetries && !success) {
+                    while (retryCount <= BASE_RETRY_CONFIG.maxRetries && !success) {
                         try {
                             success = await refreshDownloadLink(cacheKey, id, pwd, env);
                             if (success) {
@@ -182,18 +191,26 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                             }
                         } catch (e) {
                             retryCount++;
-                            if (retryCount <= maxRetries) {
-                                const delay = Math.pow(2, retryCount) * 100; // 恢复延迟时间
-                                console.log(`Retrying ${cacheKey} (attempt ${retryCount}) after ${delay}ms...`);
+                            retryErrorType = analyzeError(e);
+                            
+                            if (retryCount <= BASE_RETRY_CONFIG.maxRetries) {
+                                // 获取特定错误类型的重试配置
+                                const retryConfig = getRetryConfig(retryErrorType, BASE_RETRY_CONFIG);
+                                const delay = calculateRetryDelay(retryConfig, retryCount);
+                                
+                                console.log(`Retrying ${cacheKey} due to ${retryErrorType} (attempt ${retryCount}) after ${delay}ms...`);
                                 await new Promise(resolve => setTimeout(resolve, delay));
                             } else {
-                                console.error(`Failed to refresh item ${cacheKey} after ${maxRetries} retries`, e);
+                                console.error(`Failed to refresh item ${cacheKey} after ${BASE_RETRY_CONFIG.maxRetries} retries due to ${retryErrorType}`, e);
                             }
                         }
                     }
                     
                     if (success) {
                         console.log(`Successfully refreshed ${cacheKey} with priority ${item.priority}`);
+                    } else if (retryErrorType) {
+                        // 如果重试失败，记录错误类型
+                        console.error(`Failed to refresh ${cacheKey} after ${BASE_RETRY_CONFIG.maxRetries} retries due to ${retryErrorType}`);
                     }
                 }
             } catch (e) {
@@ -203,7 +220,11 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
         // 如果有刷新的数据，将它们分片存储到多个KV条目中
         if (Object.keys(refreshedData).length > 0) {
-            await setShardedBatchCacheData(refreshedData, env);
+            try {
+                await setShardedBatchCacheData(refreshedData, env);
+            } catch (shardError) {
+                console.error('Error storing sharded batch cache data:', shardError);
+            }
         }
 
         // 清理内存缓存中的过期项

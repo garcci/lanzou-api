@@ -8,7 +8,7 @@ const CACHE_TTL = 15 * 60; // 15分钟缓存时间，与下载链接失效时间
 const REFRESH_INTERVAL = 15 * 60 * 1000; // 15分钟刷新间隔（与 cron trigger 同步）
 const URGENT_REFRESH_THRESHOLD = 3 * 60 * 1000; // 3分钟内即将过期的紧急刷新阈值
 const MEMORY_CACHE_TTL = 5 * 60 * 1000; // 内存缓存5分钟过期时间
-const WRITE_THROTTLE_INTERVAL = 24 * 60 * 60 * 1000 / 500; // 控制每天最多500次写入操作
+const WRITE_THROTTLE_INTERVAL = 24 * 60 * 60 * 1000 / 1000; // 控制每天最多1000次写入操作
 const BATCH_CACHE_KEY_PREFIX = '__batch_cache_data_'; // 批量缓存数据的键前缀
 const BATCH_CACHE_KEY_SUFFIX = '__'; // 批量缓存数据的键后缀
 const BATCH_CACHE_METADATA_KEY = '__batch_cache_metadata__'; // 批量缓存元数据键
@@ -90,6 +90,60 @@ export function getUnifiedTimeConfig(env) {
     };
 }
 
+// 从D1数据库获取缓存数据
+async function getD1CacheData(cacheKey, env) {
+    if (!env.DB) return null;
+    
+    try {
+        const now = Math.floor(Date.now() / 1000);
+        const stmt = env.DB.prepare(
+            "SELECT data FROM cache WHERE cache_key = ? AND expires_at > ?"
+        ).bind(cacheKey, now);
+        
+        const result = await stmt.first();
+        if (result && result.data) {
+            return JSON.parse(result.data);
+        }
+    } catch (error) {
+        console.error(`Error getting D1 cache data for ${cacheKey}:`, error);
+    }
+    
+    return null;
+}
+
+// 将数据存储到D1数据库
+async function setD1CacheData(cacheKey, data, env) {
+    if (!env.DB) return null;
+    
+    try {
+        const now = Math.floor(Date.now() / 1000);
+        const expiresAt = now + CACHE_TTL; // 15分钟后过期
+        
+        const stmt = env.DB.prepare(
+            "INSERT OR REPLACE INTO cache (cache_key, data, updated_at, expires_at) VALUES (?, ?, ?, ?)"
+        ).bind(cacheKey, JSON.stringify(data), now, expiresAt);
+        
+        await stmt.run();
+        return { now, refresh: Date.now() + REFRESH_INTERVAL };
+    } catch (error) {
+        console.error(`Error setting D1 cache data for ${cacheKey}:`, error);
+    }
+    
+    return null;
+}
+
+// 从D1数据库删除缓存数据
+async function deleteD1CacheData(cacheKey, env) {
+    if (!env.DB) return;
+    
+    try {
+        const stmt = env.DB.prepare("DELETE FROM cache WHERE cache_key = ?").bind(cacheKey);
+        await stmt.run();
+    } catch (error) {
+        console.error(`Error deleting D1 cache data for ${cacheKey}:`, error);
+    }
+}
+
 // 合并数据存储函数 - 减少KV操作次数
 export async function setCacheData(cacheKey, data, env) {
     if (env.DOWNLOAD_CACHE) {
@@ -106,21 +160,34 @@ export async function setCacheData(cacheKey, data, env) {
         // 存储到内存缓存
         memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
 
+        // 存储到D1数据库（第三级缓存）
+        if (env.DB) {
+            try {
+                await setD1CacheData(cacheKey, cacheData, env);
+            } catch (error) {
+                console.error(`Error storing cache data to D1 for ${cacheKey}:`, error);
+            }
+        }
+
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.put === 'function') {
-            // 检查是否允许写入（控制写入频率）
-            const lastWriteTime = await getLastWriteTime(env);
-            const now = Date.now();
-            
-            // 如果距离上次写入时间足够长，或者这是高优先级的写入操作，则执行写入
-            if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL || 
-                (data && data.url && isCacheableFileType(data.url))) {
-                // 将对象序列化为 JSON 字符串后再存储
-                await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
-                // 更新最后一次写入时间
-                await updateLastWriteTime(env, now);
-            } else {
-                console.log(`Skipping KV write for ${cacheKey} due to throttling`);
+            try {
+                // 检查是否允许写入（控制写入频率）
+                const lastWriteTime = await getLastWriteTime(env);
+                const now = Date.now();
+                
+                // 如果距离上次写入时间足够长，或者这是高优先级的写入操作，则执行写入
+                if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL || 
+                    (data && data.url && isCacheableFileType(data.url))) {
+                    // 将对象序列化为 JSON 字符串后再存储
+                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
+                    // 更新最后一次写入时间
+                    await updateLastWriteTime(env, now);
+                } else {
+                    console.log(`Skipping KV write for ${cacheKey} due to throttling`);
+                }
+            } catch (error) {
+                console.error(`Error storing cache data for ${cacheKey}:`, error);
             }
         }
         return timeConfig;
@@ -140,7 +207,11 @@ async function getLastWriteTime(env) {
 // 更新最后一次写入时间
 async function updateLastWriteTime(env, timestamp) {
     if (typeof env.DOWNLOAD_CACHE.put === 'function') {
-        await env.DOWNLOAD_CACHE.put('__last_write_time__', timestamp.toString());
+        try {
+            await env.DOWNLOAD_CACHE.put('__last_write_time__', timestamp.toString());
+        } catch (error) {
+            console.error('Error updating last write time:', error);
+        }
     }
 }
 
@@ -173,6 +244,15 @@ export async function batchSetCacheData(cacheDataMap, env) {
                 
                 // 存储到内存缓存
                 memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
+                
+                // 存储到D1数据库（第三级缓存）
+                if (env.DB) {
+                    try {
+                        await setD1CacheData(cacheKey, cacheData, env);
+                    } catch (error) {
+                        console.error(`Error storing cache data to D1 for ${cacheKey}:`, error);
+                    }
+                }
                 
                 // 存储到KV
                 if (typeof env.DOWNLOAD_CACHE.put === 'function') {
@@ -258,12 +338,20 @@ export async function setShardedBatchCacheData(batchData, env) {
                 const shardKey = `${BATCH_CACHE_KEY_PREFIX}${shardIndex}${BATCH_CACHE_KEY_SUFFIX}`;
                 const serializedShardData = JSON.stringify(shardData);
                 
-                await env.DOWNLOAD_CACHE.put(shardKey, serializedShardData);
-                console.log(`Stored shard ${shardIndex} with ${Object.keys(shardData).length} entries`);
+                try {
+                    await env.DOWNLOAD_CACHE.put(shardKey, serializedShardData);
+                    console.log(`Stored shard ${shardIndex} with ${Object.keys(shardData).length} entries`);
+                } catch (error) {
+                    console.error(`Error storing shard ${shardIndex}:`, error);
+                }
             }
             
             // 存储元数据
-            await env.DOWNLOAD_CACHE.put(BATCH_CACHE_METADATA_KEY, JSON.stringify(metadata));
+            try {
+                await env.DOWNLOAD_CACHE.put(BATCH_CACHE_METADATA_KEY, JSON.stringify(metadata));
+            } catch (error) {
+                console.error('Error storing batch cache metadata:', error);
+            }
             
             // 更新最后一次写入时间
             await updateLastWriteTime(env, now);
@@ -285,6 +373,16 @@ export async function getShardedBatchCacheData(cacheKey, env) {
         const memoryCachedData = memoryCache.get(cacheKey);
         if (memoryCachedData) {
             return memoryCachedData;
+        }
+        
+        // 然后尝试从D1数据库获取
+        if (env.DB) {
+            const d1CachedData = await getD1CacheData(cacheKey, env);
+            if (d1CachedData) {
+                // 存储到内存缓存
+                memoryCache.set(cacheKey, d1CachedData, MEMORY_CACHE_TTL);
+                return d1CachedData;
+            }
         }
         
         // 从元数据获取分片信息
@@ -407,6 +505,16 @@ export async function getCacheData(cacheKey, env) {
         const memoryCachedData = memoryCache.get(cacheKey);
         if (memoryCachedData) {
             return memoryCachedData;
+        }
+
+        // 然后尝试从D1数据库获取
+        if (env.DB) {
+            const d1CachedData = await getD1CacheData(cacheKey, env);
+            if (d1CachedData) {
+                // 存储到内存缓存
+                memoryCache.set(cacheKey, d1CachedData, MEMORY_CACHE_TTL);
+                return d1CachedData;
+            }
         }
 
         // 兼容 Cloudflare KV 和本地模拟的 KV

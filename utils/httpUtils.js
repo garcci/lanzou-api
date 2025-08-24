@@ -1,4 +1,6 @@
 // utils/httpUtils.js
+import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from './errorUtils.js';
+
 const LANZOU_DOMAIN = "lanzoux.com";
 
 // 统一的请求头
@@ -31,13 +33,6 @@ export function randIP() {
     const ip1id = arr_1[randIndex];
     return `${ip1id}.${ip2id}.${ip3id}.${ip4id}`;
 }
-
-// 增加重试次数和延迟以提高稳定性
-const RETRY_CONFIG = {
-    maxRetries: 2, // 减少重试次数以提高响应速度
-    retryDelay: 200, // 减少重试延迟
-    exponentialBackoff: true
-};
 
 // 延迟函数
 export function delay(ms) {
@@ -87,11 +82,20 @@ export async function getRequest(url, retryCount = 0, options = {}) {
     } catch (error) {
         console.error(`Error in GET request (attempt ${retryCount + 1}):`, error.message);
 
-        if (retryCount < RETRY_CONFIG.maxRetries) {
-            const delayTime = RETRY_CONFIG.exponentialBackoff
-                ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
-                : RETRY_CONFIG.retryDelay;
-
+        // 分析错误类型并获取相应的重试配置
+        const errorType = analyzeError(error);
+        const retryConfig = getRetryConfig(errorType, {
+            maxRetries: 2,
+            retryDelay: 200,
+            exponentialBackoff: true,
+            jitter: true,
+            maxDelay: 10000
+        });
+        
+        if (retryCount < retryConfig.maxRetries) {
+            const delayTime = calculateRetryDelay(retryConfig, retryCount);
+            
+            console.log(`Retrying GET request due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
             await delay(delayTime);
             return getRequest(url, retryCount + 1, options);
         }
@@ -140,11 +144,20 @@ export async function postRequest(url, data, retryCount = 0) {
     } catch (error) {
         console.error(`Error in POST request (attempt ${retryCount + 1}):`, error.message);
 
-        if (retryCount < RETRY_CONFIG.maxRetries) {
-            const delayTime = RETRY_CONFIG.exponentialBackoff
-                ? RETRY_CONFIG.retryDelay * Math.pow(2, retryCount)
-                : RETRY_CONFIG.retryDelay;
-
+        // 分析错误类型并获取相应的重试配置
+        const errorType = analyzeError(error);
+        const retryConfig = getRetryConfig(errorType, {
+            maxRetries: 2,
+            retryDelay: 200,
+            exponentialBackoff: true,
+            jitter: true,
+            maxDelay: 10000
+        });
+        
+        if (retryCount < retryConfig.maxRetries) {
+            const delayTime = calculateRetryDelay(retryConfig, retryCount);
+            
+            console.log(`Retrying POST request due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
             await delay(delayTime);
             return postRequest(url, data, retryCount + 1);
         }

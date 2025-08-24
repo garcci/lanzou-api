@@ -3,6 +3,8 @@ import { extractSignAndFileId, followRedirect, checkUrlValidity } from '../utils
 import { postRequest } from '../utils/httpUtils.js';
 import { getCacheData, setCacheData, shouldRefreshLink, deleteFromMemoryCache } from '../utils/cacheUtils.js';
 import { getMimeTypeFromUrl, shouldDisplayInline } from '../utils/mimeUtils.js';
+import requestCoalescer from '../utils/requestCoalescer.js';
+import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from '../utils/errorUtils.js';
 
 const LANZOU_DOMAIN = "lanzoux.com";
 
@@ -107,68 +109,12 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
     }
 
     // 缓存未命中或需要刷新，获取新的下载链接
+    // 使用请求合并管理器避免重复处理相同ID的请求
     try {
-        const signAndFileId = await extractSignAndFileId(id);
-        if (!signAndFileId) {
-            return new Response('Sign value not found', { status: 404 });
-        }
-
-        let downloadUrl;
-        if (signAndFileId.redirect) {
-            // 获取已经过重定向跟踪的最终链接
-            const finalUrl = signAndFileId.redirect;
-            downloadUrl = finalUrl;
-        } else {
-            const { fileId, sign } = signAndFileId;
-
-            const postData = {
-                action: "downprocess",
-                sign: sign,
-                kd: "1",
-                p: pwd || ""
-            };
-
-            const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
-
-            // 增强错误处理
-            if (!response) {
-                throw new Error('Empty response from server');
-            }
-
-            let resultObj;
-            try {
-                resultObj = JSON.parse(response);
-            } catch (parseError) {
-                console.error('Failed to parse JSON response:', response);
-                throw new Error(`Invalid JSON response from server: ${response.substring(0, 100)}...`);
-            }
-
-            if (resultObj && resultObj.url) {
-                // 构造初始下载链接
-                const url = resultObj.dom + "/file/" + resultObj.url;
-                // 跟踪重定向并返回最终链接
-                downloadUrl = await followRedirect(url);
-            } else {
-                console.error('Invalid response structure:', response);
-                throw new Error(`Invalid response structure from server: ${JSON.stringify(resultObj)}`);
-            }
-        }
-
-        // 确保我们获得了最终的下载链接
+        const result = await requestCoalescer.addRequest(id, pwd, () => fetchNewDownloadLink(id, pwd, env, ctx));
+        const downloadUrl = result.url;
+        
         if (downloadUrl) {
-            const result = {
-                url: downloadUrl, // 确保这是最终链接
-                timestamp: Date.now(),
-                id: id,
-                pwd: pwd || null
-            };
-
-            // 将结果存入KV缓存和内存缓存
-            if (env.DOWNLOAD_CACHE) {
-                // 使用合并存储函数减少KV操作次数
-                await setCacheData(cacheKey, result, env);
-            }
-
             // 存储到Cloudflare缓存
             const mimeType = getMimeTypeFromUrl(downloadUrl);
             const headers = {};
@@ -210,6 +156,77 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
     }
 }
 
+// 获取新的下载链接的函数
+async function fetchNewDownloadLink(id, pwd, env, ctx) {
+    console.log(`Fetching new download link for ID: ${id}, PWD: ${pwd}`);
+    
+    const signAndFileId = await extractSignAndFileId(id);
+    if (!signAndFileId) {
+        throw new Error('Sign value not found');
+    }
+
+    let downloadUrl;
+    if (signAndFileId.redirect) {
+        // 获取已经过重定向跟踪的最终链接
+        const finalUrl = signAndFileId.redirect;
+        downloadUrl = finalUrl;
+    } else {
+        const { fileId, sign } = signAndFileId;
+
+        const postData = {
+            action: "downprocess",
+            sign: sign,
+            kd: "1",
+            p: pwd || ""
+        };
+
+        const response = await postRequest(`https://${LANZOU_DOMAIN}/ajaxm.php?file=${fileId}`, postData);
+
+        // 增强错误处理
+        if (!response) {
+            throw new Error('Empty response from server');
+        }
+
+        let resultObj;
+        try {
+            resultObj = JSON.parse(response);
+        } catch (parseError) {
+            console.error('Failed to parse JSON response:', response);
+            throw new Error(`Invalid JSON response from server: ${response.substring(0, 100)}...`);
+        }
+
+        if (resultObj && resultObj.url) {
+            // 构造初始下载链接
+            const url = resultObj.dom + "/file/" + resultObj.url;
+            // 跟踪重定向并返回最终链接
+            downloadUrl = await followRedirect(url);
+        } else {
+            console.error('Invalid response structure:', response);
+            throw new Error(`Invalid response structure from server: ${JSON.stringify(resultObj)}`);
+        }
+    }
+
+    // 确保我们获得了最终的下载链接
+    if (downloadUrl) {
+        const result = {
+            url: downloadUrl, // 确保这是最终链接
+            timestamp: Date.now(),
+            id: id,
+            pwd: pwd || null
+        };
+
+        // 将结果存入KV缓存、D1数据库和内存缓存
+        if (env.DOWNLOAD_CACHE) {
+            // 使用合并存储函数减少KV操作次数
+            await setCacheData(`download_${id}_${pwd || 'nopwd'}`, result, env);
+        }
+
+        return result;
+    } else {
+        throw new Error('Failed to get download URL');
+    }
+}
+
 // 定时刷新函数 - 添加重试机制
 export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0) {
     console.log(`Refreshing download link for ${cacheKey} (attempt ${retryCount + 1})`);
@@ -217,12 +234,21 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
         const signAndFileId = await extractSignAndFileId(id);
         if (!signAndFileId) {
             console.error(`Failed to refresh ${cacheKey}: Sign value not found`);
+            // 分析错误类型并获取相应的重试配置
+            const error = new Error('Sign value not found');
+            const errorType = analyzeError(error);
+            const retryConfig = getRetryConfig(errorType, { 
+                maxRetries: 2,
+                retryDelay: 200,
+                exponentialBackoff: true,
+                jitter: true,
+                maxDelay: 10000
+            });
+            
             // 添加重试机制
-            if (retryCount < 2) {
-                const delayTime = true
-                    ? 200 * Math.pow(2, retryCount)
-                    : 200;
-
+            if (retryCount < retryConfig.maxRetries) {
+                const delayTime = calculateRetryDelay(retryConfig, retryCount);
+                console.log(`Retrying due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
                 await new Promise(resolve => setTimeout(resolve, delayTime));
                 return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
             }
@@ -268,12 +294,21 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
                     downloadUrl = resolvedUrl;
                 } else {
                     console.error(`Invalid response structure for ${cacheKey}:`, response);
+                    // 分析错误类型并获取相应的重试配置
+                    const error = new Error(`Invalid response structure: ${JSON.stringify(resultObj)}`);
+                    const errorType = analyzeError(error);
+                    const retryConfig = getRetryConfig(errorType, { 
+                        maxRetries: 2,
+                        retryDelay: 200,
+                        exponentialBackoff: true,
+                        jitter: true,
+                        maxDelay: 10000
+                    });
+                    
                     // 添加重试机制
-                    if (retryCount < 2) {
-                        const delayTime = true
-                            ? 200 * Math.pow(2, retryCount)
-                            : 200;
-
+                    if (retryCount < retryConfig.maxRetries) {
+                        const delayTime = calculateRetryDelay(retryConfig, retryCount);
+                        console.log(`Retrying due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
                         await new Promise(resolve => setTimeout(resolve, delayTime));
                         return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
                     }
@@ -281,12 +316,20 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
                 }
             } catch (parseError) {
                 console.error(`Failed to parse response for ${cacheKey}:`, parseError);
+                // 分析错误类型并获取相应的重试配置
+                const errorType = analyzeError(parseError);
+                const retryConfig = getRetryConfig(errorType, { 
+                    maxRetries: 2,
+                    retryDelay: 200,
+                    exponentialBackoff: true,
+                    jitter: true,
+                    maxDelay: 10000
+                });
+                
                 // 添加重试机制
-                if (retryCount < 2) {
-                    const delayTime = true
-                        ? 200 * Math.pow(2, retryCount)
-                        : 200;
-
+                if (retryCount < retryConfig.maxRetries) {
+                    const delayTime = calculateRetryDelay(retryConfig, retryCount);
+                    console.log(`Retrying due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
                     await new Promise(resolve => setTimeout(resolve, delayTime));
                     return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
                 }
@@ -303,22 +346,36 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
                 pwd: pwd || null
             };
 
-            // 更新KV缓存和内存缓存
+            // 更新KV缓存、D1数据库和内存缓存
             if (env.DOWNLOAD_CACHE) {
                 // 使用合并存储函数减少KV操作次数
-                await setCacheData(cacheKey, result, env);
+                try {
+                    await setCacheData(cacheKey, result, env);
+                } catch (error) {
+                    console.error(`Error setting cache data for ${cacheKey}:`, error);
+                    // 即使缓存写入失败，也认为刷新成功
+                }
             }
 
             console.log(`Successfully refreshed download link for ${cacheKey}`);
             return true;
         } else {
             console.error(`Failed to get download URL for ${cacheKey}`);
+            // 分析错误类型并获取相应的重试配置
+            const error = new Error('Failed to get download URL');
+            const errorType = analyzeError(error);
+            const retryConfig = getRetryConfig(errorType, { 
+                maxRetries: 2,
+                retryDelay: 200,
+                exponentialBackoff: true,
+                jitter: true,
+                maxDelay: 10000
+            });
+            
             // 添加重试机制
-            if (retryCount < 2) {
-                const delayTime = true
-                    ? 200 * Math.pow(2, retryCount)
-                    : 200;
-
+            if (retryCount < retryConfig.maxRetries) {
+                const delayTime = calculateRetryDelay(retryConfig, retryCount);
+                console.log(`Retrying due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
                 await new Promise(resolve => setTimeout(resolve, delayTime));
                 return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
             }
@@ -327,12 +384,20 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
     } catch (error) {
         console.error(`Error refreshing download link for ${cacheKey}:`, error);
         // 出错时也更新刷新时间，避免持续尝试失败的刷新
+        // 分析错误类型并获取相应的重试配置
+        const errorType = analyzeError(error);
+        const retryConfig = getRetryConfig(errorType, { 
+            maxRetries: 2,
+            retryDelay: 200,
+            exponentialBackoff: true,
+            jitter: true,
+            maxDelay: 10000
+        });
+        
         // 添加重试机制
-        if (retryCount < 2) {
-            const delayTime = true
-                ? 200 * Math.pow(2, retryCount)
-                : 200;
-
+        if (retryCount < retryConfig.maxRetries) {
+            const delayTime = calculateRetryDelay(retryConfig, retryCount);
+            console.log(`Retrying due to ${errorType} (attempt ${retryCount + 1}/${retryConfig.maxRetries}), delay: ${delayTime}ms`);
             await new Promise(resolve => setTimeout(resolve, delayTime));
             return refreshDownloadLink(cacheKey, id, pwd, env, retryCount + 1);
         }
