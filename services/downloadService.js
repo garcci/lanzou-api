@@ -8,6 +8,15 @@ import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from '..
 
 const LANZOU_DOMAIN = "lanzoux.com";
 
+// 基础重试配置
+const BASE_RETRY_CONFIG = {
+    maxRetries: 2,
+    retryDelay: 200,
+    exponentialBackoff: true,
+    jitter: true,
+    maxDelay: 10000
+};
+
 // 创建统一的处理函数
 export async function handleDownloadRequest(id, pwd, env, request, ctx) {
     const startTime = Date.now();
@@ -50,7 +59,7 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
 
                 if (!needRefresh && isUrlValid) {
                     console.log(`Cache hit for ${cacheKey} (memory or KV)`);
-                    // 更新Cloudflare缓存
+                    // 更新Cloudflare缓存，设置较长的缓存时间
                     const mimeType = getMimeTypeFromUrl(cachedData.url);
                     const headers = {};
                     
@@ -61,6 +70,9 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                         }
                         headers['Content-Type'] = mimeType;
                     }
+                    
+                    // 设置边缘缓存时间为2分钟，减少对源服务器的请求
+                    headers['Cache-Control'] = 'public, max-age=120';
                     
                     const response = new Response(null, {
                         status: 302,
@@ -94,6 +106,9 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                     headers['Content-Type'] = mimeType;
                 }
                 
+                // 设置边缘缓存时间为30秒，减少对源服务器的请求
+                headers['Cache-Control'] = 'public, max-age=30';
+                
                 const response = new Response(null, {
                     status: 302,
                     headers: {
@@ -115,7 +130,7 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
         const downloadUrl = result.url;
         
         if (downloadUrl) {
-            // 存储到Cloudflare缓存
+            // 存储到Cloudflare缓存，设置合适的缓存时间
             const mimeType = getMimeTypeFromUrl(downloadUrl);
             const headers = {};
             
@@ -126,6 +141,9 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 }
                 headers['Content-Type'] = mimeType;
             }
+            
+            // 新获取的链接设置1分钟的边缘缓存时间
+            headers['Cache-Control'] = 'public, max-age=60';
             
             const response = new Response(null, {
                 status: 302,
@@ -237,13 +255,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
             // 分析错误类型并获取相应的重试配置
             const error = new Error('Sign value not found');
             const errorType = analyzeError(error);
-            const retryConfig = getRetryConfig(errorType, { 
-                maxRetries: 2,
-                retryDelay: 200,
-                exponentialBackoff: true,
-                jitter: true,
-                maxDelay: 10000
-            });
+            const retryConfig = getRetryConfig(errorType, BASE_RETRY_CONFIG);
             
             // 添加重试机制
             if (retryCount < retryConfig.maxRetries) {
@@ -297,13 +309,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
                     // 分析错误类型并获取相应的重试配置
                     const error = new Error(`Invalid response structure: ${JSON.stringify(resultObj)}`);
                     const errorType = analyzeError(error);
-                    const retryConfig = getRetryConfig(errorType, { 
-                        maxRetries: 2,
-                        retryDelay: 200,
-                        exponentialBackoff: true,
-                        jitter: true,
-                        maxDelay: 10000
-                    });
+                    const retryConfig = getRetryConfig(errorType, BASE_RETRY_CONFIG);
                     
                     // 添加重试机制
                     if (retryCount < retryConfig.maxRetries) {
@@ -318,13 +324,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
                 console.error(`Failed to parse response for ${cacheKey}:`, parseError);
                 // 分析错误类型并获取相应的重试配置
                 const errorType = analyzeError(parseError);
-                const retryConfig = getRetryConfig(errorType, { 
-                    maxRetries: 2,
-                    retryDelay: 200,
-                    exponentialBackoff: true,
-                    jitter: true,
-                    maxDelay: 10000
-                });
+                const retryConfig = getRetryConfig(errorType, BASE_RETRY_CONFIG);
                 
                 // 添加重试机制
                 if (retryCount < retryConfig.maxRetries) {
@@ -364,13 +364,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
             // 分析错误类型并获取相应的重试配置
             const error = new Error('Failed to get download URL');
             const errorType = analyzeError(error);
-            const retryConfig = getRetryConfig(errorType, { 
-                maxRetries: 2,
-                retryDelay: 200,
-                exponentialBackoff: true,
-                jitter: true,
-                maxDelay: 10000
-            });
+            const retryConfig = getRetryConfig(errorType, BASE_RETRY_CONFIG);
             
             // 添加重试机制
             if (retryCount < retryConfig.maxRetries) {
@@ -386,13 +380,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
         // 出错时也更新刷新时间，避免持续尝试失败的刷新
         // 分析错误类型并获取相应的重试配置
         const errorType = analyzeError(error);
-        const retryConfig = getRetryConfig(errorType, { 
-            maxRetries: 2,
-            retryDelay: 200,
-            exponentialBackoff: true,
-            jitter: true,
-            maxDelay: 10000
-        });
+        const retryConfig = getRetryConfig(errorType, BASE_RETRY_CONFIG);
         
         // 添加重试机制
         if (retryCount < retryConfig.maxRetries) {

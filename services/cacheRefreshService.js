@@ -2,6 +2,8 @@ import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, 
 import { refreshDownloadLink } from './downloadService.js';
 import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from '../utils/errorUtils.js';
 
+// services/cacheRefreshService.js
+
 // 检查并刷新过期链接的任务函数
 export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
     // 这个函数将在后台运行，检查需要刷新的链接
@@ -63,7 +65,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const priorityItems = [];       // 智能优先级排序的项
 
         // 从环境变量读取配置参数
-        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 100; // 恢复原来处理数量
+        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 50; // 减少每次处理的数量
         const urgentThreshold = env?.URGENT_THRESHOLD ? parseInt(env.URGENT_THRESHOLD) : (3 * 60 * 1000);
         
         let processedKeys = 0;
@@ -156,8 +158,8 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         await batchDeleteCacheItems(expiredItems, env);
         console.log(`Expired cache entries deleted: ${expiredItems.length}`);
 
-        // 恢复原来的刷新数量，确保所有需要刷新的链接都能及时更新
-        const itemsToRefresh = priorityItems.slice(0, Math.min(maxKeysToProcess / 2, priorityItems.length)); // 刷新所有需要刷新的项
+        // 限制刷新数量，确保不会超负荷
+        const itemsToRefresh = priorityItems.slice(0, Math.min(maxKeysToProcess / 2, priorityItems.length, 20)); // 最多刷新20项
         
         // 收集需要刷新的数据
         const refreshedData = {};
@@ -179,7 +181,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                     let success = false;
                     let retryErrorType = null;
 
-                    while (retryCount <= BASE_RETRY_CONFIG.maxRetries && !success) {
+                    while (retryCount <= 2 && !success) {
                         try {
                             success = await refreshDownloadLink(cacheKey, id, pwd, env);
                             if (success) {
@@ -193,15 +195,21 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                             retryCount++;
                             retryErrorType = analyzeError(e);
                             
-                            if (retryCount <= BASE_RETRY_CONFIG.maxRetries) {
+                            if (retryCount <= 2) {
                                 // 获取特定错误类型的重试配置
-                                const retryConfig = getRetryConfig(retryErrorType, BASE_RETRY_CONFIG);
+                                const retryConfig = getRetryConfig(retryErrorType, { 
+                                    maxRetries: 2,
+                                    retryDelay: 200,
+                                    exponentialBackoff: true,
+                                    jitter: true,
+                                    maxDelay: 10000
+                                });
                                 const delay = calculateRetryDelay(retryConfig, retryCount);
                                 
                                 console.log(`Retrying ${cacheKey} due to ${retryErrorType} (attempt ${retryCount}) after ${delay}ms...`);
                                 await new Promise(resolve => setTimeout(resolve, delay));
                             } else {
-                                console.error(`Failed to refresh item ${cacheKey} after ${BASE_RETRY_CONFIG.maxRetries} retries due to ${retryErrorType}`, e);
+                                console.error(`Failed to refresh item ${cacheKey} after 2 retries due to ${retryErrorType}`, e);
                             }
                         }
                     }
@@ -210,7 +218,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                         console.log(`Successfully refreshed ${cacheKey} with priority ${item.priority}`);
                     } else if (retryErrorType) {
                         // 如果重试失败，记录错误类型
-                        console.error(`Failed to refresh ${cacheKey} after ${BASE_RETRY_CONFIG.maxRetries} retries due to ${retryErrorType}`);
+                        console.error(`Failed to refresh ${cacheKey} after 2 retries due to ${retryErrorType}`);
                     }
                 }
             } catch (e) {
@@ -231,8 +239,68 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const cleanedCount = cleanupMemoryCache();
         console.log(`Cleaned ${cleanedCount} expired items from memory cache`);
 
+        // 预加载即将过期的热门文件（在低峰期执行）
+        await preloadPopularFiles(env, cacheDataMap);
+
     } catch (error) {
         console.error('Error in checkAndRefreshLinks:', error);
+    }
+}
+
+// 预加载即将过期的热门文件
+async function preloadPopularFiles(env, cacheDataMap) {
+    try {
+        const now = Date.now();
+        
+        // 只在低峰期（如凌晨2点到5点）执行预加载
+        const currentHour = new Date().getHours();
+        if (currentHour >= 2 && currentHour <= 5) {
+            console.log('Running preload task during low-traffic hours');
+            
+            // 查找即将过期（24小时内）且访问频率高的文件
+            const candidates = [];
+            for (const [cacheKey, cacheData] of cacheDataMap.entries()) {
+                if (cacheData && cacheData._time && cacheData.url) {
+                    const timeToExpiry = (cacheData._time.refresh + 15 * 60 * 1000) - now;
+                    // 如果在24小时内过期且是可缓存的文件类型
+                    if (timeToExpiry > 0 && timeToExpiry <= 24 * 60 * 60 * 1000) {
+                        // 从utils/cacheUtils.js中导入isCacheableFileType函数
+                        const isCacheableFileType = (await import('../utils/cacheUtils.js')).isCacheableFileType;
+                        if (isCacheableFileType(cacheData.url)) {
+                            const priority = getRefreshPriority(cacheKey, cacheData, env);
+                            candidates.push({ cacheKey, cacheData, priority, timeToExpiry });
+                        }
+                    }
+                }
+            }
+            
+            // 按优先级排序，选择前10个进行预加载
+            candidates.sort((a, b) => b.priority - a.priority);
+            const filesToPreload = candidates.slice(0, 10);
+            
+            console.log(`Preloading ${filesToPreload.length} popular files`);
+            
+            // 预加载文件
+            for (const { cacheKey, cacheData } of filesToPreload) {
+                try {
+                    const parts = cacheKey.replace('download_', '').split('_');
+                    const id = parts[0];
+                    const pwd = parts[1] === 'nopwd' ? null : parts[1];
+                    
+                    // 刷新文件
+                    const success = await refreshDownloadLink(cacheKey, id, pwd, env);
+                    if (success) {
+                        console.log(`Preloaded file ${cacheKey} successfully`);
+                    } else {
+                        console.log(`Failed to preload file ${cacheKey}`);
+                    }
+                } catch (error) {
+                    console.error(`Error preloading file ${cacheKey}:`, error);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error in preloadPopularFiles:', error);
     }
 }
 

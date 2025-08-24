@@ -5,17 +5,19 @@ import { getMimeTypeFromUrl } from './mimeUtils.js';
 // 创建缓存实例
 // 支持从环境变量读取配置参数，实现动态调整刷新策略
 const CACHE_TTL = 15 * 60; // 15分钟缓存时间，与下载链接失效时间一致
-const REFRESH_INTERVAL = 15 * 60 * 1000; // 15分钟刷新间隔（与 cron trigger 同步）
+const REFRESH_INTERVAL = 12 * 60 * 1000; // 12分钟刷新间隔，在15分钟有效期前刷新
 const URGENT_REFRESH_THRESHOLD = 3 * 60 * 1000; // 3分钟内即将过期的紧急刷新阈值
 const MEMORY_CACHE_TTL = 5 * 60 * 1000; // 内存缓存5分钟过期时间
-const WRITE_THROTTLE_INTERVAL = 24 * 60 * 60 * 1000 / 1000; // 控制每天最多1000次写入操作
+const D1_CACHE_TTL = 15 * 60; // D1数据库15分钟过期时间
+const KV_CACHE_TTL = 15 * 60; // KV存储15分钟过期时间
+const WRITE_THROTTLE_INTERVAL = 24 * 60 * 60 * 1000 / 500; // 控制每天最多500次写入操作（增加限制）
 const BATCH_CACHE_KEY_PREFIX = '__batch_cache_data_'; // 批量缓存数据的键前缀
 const BATCH_CACHE_KEY_SUFFIX = '__'; // 批量缓存数据的键后缀
 const BATCH_CACHE_METADATA_KEY = '__batch_cache_metadata__'; // 批量缓存元数据键
 const KV_SIZE_LIMIT = 25 * 1024 * 1024; // KV大小限制 25MB
 
 // 判断文件类型是否值得缓存
-function isCacheableFileType(url) {
+export function isCacheableFileType(url) {
     const cacheableExtensions = [
         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.ico',  // 图片
         '.mp4', '.webm', '.mov', '.avi', '.mkv',          // 视频
@@ -26,6 +28,26 @@ function isCacheableFileType(url) {
     
     const lowerUrl = url.toLowerCase();
     return cacheableExtensions.some(ext => lowerUrl.endsWith(ext));
+}
+
+// 根据文件类型获取缓存时间
+function getCacheTTLByFileType(url) {
+    if (!url) return CACHE_TTL;
+    
+    const lowerUrl = url.toLowerCase();
+    
+    // 图片文件缓存15分钟（与链接有效期一致）
+    if (lowerUrl.match(/\.(jpg|jpeg|png|gif|webp|ico)$/)) {
+        return 15 * 60; // 15分钟
+    }
+    
+    // 音视频文件缓存15分钟（与链接有效期一致）
+    if (lowerUrl.match(/\.(mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a)$/)) {
+        return 15 * 60; // 15分钟
+    }
+    
+    // 其他文件缓存15分钟（与链接有效期一致）
+    return CACHE_TTL;
 }
 
 // 获取缓存项的访问频率分数
@@ -117,7 +139,9 @@ async function setD1CacheData(cacheKey, data, env) {
     
     try {
         const now = Math.floor(Date.now() / 1000);
-        const expiresAt = now + CACHE_TTL; // 15分钟后过期
+        // 根据文件类型设置不同的过期时间，但不超过15分钟
+        const cacheTTL = data && data.url ? getCacheTTLByFileType(data.url) : D1_CACHE_TTL;
+        const expiresAt = now + Math.min(cacheTTL, 15 * 60); // 确保不超过15分钟
         
         const stmt = env.DB.prepare(
             "INSERT OR REPLACE INTO cache (cache_key, data, updated_at, expires_at) VALUES (?, ?, ?, ?)"
@@ -172,19 +196,23 @@ export async function setCacheData(cacheKey, data, env) {
         // 兼容 Cloudflare KV 和本地模拟的 KV
         if (typeof env.DOWNLOAD_CACHE.put === 'function') {
             try {
-                // 检查是否允许写入（控制写入频率）
-                const lastWriteTime = await getLastWriteTime(env);
-                const now = Date.now();
-                
-                // 如果距离上次写入时间足够长，或者这是高优先级的写入操作，则执行写入
-                if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL || 
-                    (data && data.url && isCacheableFileType(data.url))) {
-                    // 将对象序列化为 JSON 字符串后再存储
-                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
-                    // 更新最后一次写入时间
-                    await updateLastWriteTime(env, now);
+                // 只有当数据是可缓存的文件类型时才写入KV
+                if (data && data.url && isCacheableFileType(data.url)) {
+                    // 检查是否允许写入（控制写入频率）
+                    const lastWriteTime = await getLastWriteTime(env);
+                    const now = Date.now();
+                    
+                    // 如果距离上次写入时间足够长，则执行写入
+                    if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL) {
+                        // 将对象序列化为 JSON 字符串后再存储
+                        await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
+                        // 更新最后一次写入时间
+                        await updateLastWriteTime(env, now);
+                    } else {
+                        console.log(`Skipping KV write for ${cacheKey} due to throttling`);
+                    }
                 } else {
-                    console.log(`Skipping KV write for ${cacheKey} due to throttling`);
+                    console.log(`Skipping KV write for ${cacheKey} - not cacheable file type`);
                 }
             } catch (error) {
                 console.error(`Error storing cache data for ${cacheKey}:`, error);
@@ -254,15 +282,14 @@ export async function batchSetCacheData(cacheDataMap, env) {
                     }
                 }
                 
-                // 存储到KV
-                if (typeof env.DOWNLOAD_CACHE.put === 'function') {
+                // 存储到KV - 只有当数据是可缓存的文件类型时才写入KV
+                if (typeof env.DOWNLOAD_CACHE.put === 'function' && data && data.url && isCacheableFileType(data.url)) {
                     // 检查是否允许写入（控制写入频率）
                     const lastWriteTime = await getLastWriteTime(env);
                     const now = Date.now();
                     
-                    // 如果距离上次写入时间足够长，或者这是高优先级的写入操作，则执行写入
-                    if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL || 
-                        (data && data.url && isCacheableFileType(data.url))) {
+                    // 如果距离上次写入时间足够长，则执行写入
+                    if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL) {
                         await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
                         // 更新最后一次写入时间
                         await updateLastWriteTime(env, now);
