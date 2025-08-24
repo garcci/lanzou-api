@@ -1,4 +1,4 @@
-import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, getRefreshPriority, setShardedBatchCacheData } from '../utils/cacheUtils.js';
+import { getCacheData, setCacheData, deleteFromMemoryCache, cleanupMemoryCache, getRefreshPriority, setShardedBatchCacheData, isCacheableFileType } from '../utils/cacheUtils.js';
 import { refreshDownloadLink } from './downloadService.js';
 import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from '../utils/errorUtils.js';
 
@@ -9,11 +9,15 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
     // 这个函数将在后台运行，检查需要刷新的链接
     if (!env.DOWNLOAD_CACHE) return;
 
+    console.log('Starting cache refresh task');
+    const taskStartTime = Date.now();
+
     try {
         const now = Date.now();
 
         // 如果指定了优先级缓存键，优先处理
         if (priorityCacheKey) {
+            console.log(`Processing priority cache key: ${priorityCacheKey}`);
             const cachedData = await getCacheData(priorityCacheKey, env);
             if (cachedData) {
                 try {
@@ -24,6 +28,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
                     // 立即刷新链接
                     await refreshDownloadLink(priorityCacheKey, id, pwd, env);
+                    console.log(`Priority cache key ${priorityCacheKey} refreshed successfully`);
                     return;
                 } catch (e) {
                     console.error(`Error parsing cached data for ${priorityCacheKey}:`, e);
@@ -46,6 +51,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         if (typeof env.DOWNLOAD_CACHE.list === 'function') {
             try {
                 keys = await env.DOWNLOAD_CACHE.list();
+                console.log(`Found ${keys.keys.length} cache keys`);
             } catch (listError) {
                 console.error('Error listing KV keys:', listError);
                 return;
@@ -56,6 +62,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 .filter(key => !key.endsWith('_time'))
                 .map(key => ({ name: key }));
             keys = { keys: keyArray };
+            console.log(`Found ${keys.keys.length} cache keys (local simulation)`);
         }
 
         // 分类处理缓存项
@@ -65,7 +72,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         const priorityItems = [];       // 智能优先级排序的项
 
         // 从环境变量读取配置参数
-        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 50; // 减少每次处理的数量
+        const maxKeysToProcess = env?.MAX_KEYS_TO_PROCESS ? parseInt(env.MAX_KEYS_TO_PROCESS) : 50; // 每次处理的数量
         const urgentThreshold = env?.URGENT_THRESHOLD ? parseInt(env.URGENT_THRESHOLD) : (3 * 60 * 1000);
         
         let processedKeys = 0;
@@ -96,6 +103,8 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                 }
             }
         }
+
+        console.log(`Processed ${cacheDataMap.size} cache entries for refresh check`);
 
         // 处理每个缓存项并计算优先级
         for (const [cacheKey, cacheData] of cacheDataMap.entries()) {
@@ -152,19 +161,22 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
 
         // 按优先级排序
         priorityItems.sort((a, b) => b.priority - a.priority);
-        console.log(`Top 5 priority items:`, priorityItems.slice(0, 5));
+        console.log(`Top 5 priority items:`, priorityItems.slice(0, 5).map(item => ({key: item.key, priority: item.priority})));
 
         // 批量处理过期项（删除）
         await batchDeleteCacheItems(expiredItems, env);
         console.log(`Expired cache entries deleted: ${expiredItems.length}`);
 
         // 限制刷新数量，确保不会超负荷
-        const itemsToRefresh = priorityItems.slice(0, Math.min(maxKeysToProcess / 2, priorityItems.length, 20)); // 最多刷新20项
+        const itemsToRefresh = priorityItems.slice(0, Math.min(maxKeysToProcess, priorityItems.length, 20)); // 最多刷新20项
+        
+        console.log(`Refreshing ${itemsToRefresh.length} cache entries`);
         
         // 收集需要刷新的数据
         const refreshedData = {};
         
         // 处理需要刷新的项
+        let successCount = 0;
         for (const item of itemsToRefresh) {
             const cacheKey = item.key;
             try {
@@ -190,6 +202,7 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
                                 if (updatedData) {
                                     refreshedData[cacheKey] = updatedData;
                                 }
+                                successCount++;
                             }
                         } catch (e) {
                             retryCount++;
@@ -242,8 +255,11 @@ export async function checkAndRefreshLinks(env, priorityCacheKey = null) {
         // 预加载即将过期的热门文件（在低峰期执行）
         await preloadPopularFiles(env, cacheDataMap);
 
+        const taskDuration = Date.now() - taskStartTime;
+        console.log(`Cache refresh task completed. Duration: ${taskDuration}ms, Refreshed: ${successCount}/${itemsToRefresh.length}, Expired: ${expiredItems.length}, Cleaned: ${cleanedCount}`);
     } catch (error) {
-        console.error('Error in checkAndRefreshLinks:', error);
+        const taskDuration = Date.now() - taskStartTime;
+        console.error(`Error in checkAndRefreshLinks. Duration: ${taskDuration}ms`, error);
     }
 }
 
@@ -264,8 +280,7 @@ async function preloadPopularFiles(env, cacheDataMap) {
                     const timeToExpiry = (cacheData._time.refresh + 15 * 60 * 1000) - now;
                     // 如果在24小时内过期且是可缓存的文件类型
                     if (timeToExpiry > 0 && timeToExpiry <= 24 * 60 * 60 * 1000) {
-                        // 从utils/cacheUtils.js中导入isCacheableFileType函数
-                        const isCacheableFileType = (await import('../utils/cacheUtils.js')).isCacheableFileType;
+                        // 使用已导入的 isCacheableFileType 函数
                         if (isCacheableFileType(cacheData.url)) {
                             const priority = getRefreshPriority(cacheKey, cacheData, env);
                             candidates.push({ cacheKey, cacheData, priority, timeToExpiry });
@@ -281,6 +296,7 @@ async function preloadPopularFiles(env, cacheDataMap) {
             console.log(`Preloading ${filesToPreload.length} popular files`);
             
             // 预加载文件
+            let preloadSuccessCount = 0;
             for (const { cacheKey, cacheData } of filesToPreload) {
                 try {
                     const parts = cacheKey.replace('download_', '').split('_');
@@ -291,6 +307,7 @@ async function preloadPopularFiles(env, cacheDataMap) {
                     const success = await refreshDownloadLink(cacheKey, id, pwd, env);
                     if (success) {
                         console.log(`Preloaded file ${cacheKey} successfully`);
+                        preloadSuccessCount++;
                     } else {
                         console.log(`Failed to preload file ${cacheKey}`);
                     }
@@ -298,6 +315,8 @@ async function preloadPopularFiles(env, cacheDataMap) {
                     console.error(`Error preloading file ${cacheKey}:`, error);
                 }
             }
+            
+            console.log(`Preload task completed. Success: ${preloadSuccessCount}/${filesToPreload.length}`);
         }
     } catch (error) {
         console.error('Error in preloadPopularFiles:', error);
@@ -307,6 +326,8 @@ async function preloadPopularFiles(env, cacheDataMap) {
 // 批量删除缓存项的函数
 async function batchDeleteCacheItems(cacheKeys, env) {
     if (!env.DOWNLOAD_CACHE || !Array.isArray(cacheKeys) || cacheKeys.length === 0) return;
+    
+    console.log(`Deleting ${cacheKeys.length} expired cache entries`);
     
     // 从环境变量读取批处理大小，默认为10
     const batchSize = env?.BATCH_SIZE ? parseInt(env.BATCH_SIZE) : 10;

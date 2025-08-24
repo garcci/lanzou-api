@@ -1,7 +1,7 @@
 // services/downloadService.js
 import { extractSignAndFileId, followRedirect, checkUrlValidity } from '../utils/linkUtils.js';
 import { postRequest } from '../utils/httpUtils.js';
-import { getCacheData, setCacheData, shouldRefreshLink, deleteFromMemoryCache } from '../utils/cacheUtils.js';
+import { getCacheData, setCacheData, shouldRefreshLink, deleteFromMemoryCache, isCacheableFileType } from '../utils/cacheUtils.js';
 import { getMimeTypeFromUrl, shouldDisplayInline } from '../utils/mimeUtils.js';
 import requestCoalescer from '../utils/requestCoalescer.js';
 import { ErrorType, analyzeError, getRetryConfig, calculateRetryDelay } from '../utils/errorUtils.js';
@@ -82,7 +82,10 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                         }
                     });
                     
-                    ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+                    // 仅当环境支持KV缓存时才写入Cloudflare缓存
+            if (env.DOWNLOAD_CACHE) {
+                ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+            }
                     return response;
                 } else if (!isUrlValid) {
                     console.log(`Cached URL is no longer valid for ${cacheKey}`);
@@ -153,7 +156,10 @@ export async function handleDownloadRequest(id, pwd, env, request, ctx) {
                 }
             });
             
-            ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+            // 仅当环境支持KV缓存时才写入Cloudflare缓存
+            if (env.DOWNLOAD_CACHE) {
+                ctx.waitUntil(cache.put(cacheKeyRequest, response.clone()));
+            }
 
             console.log(`Request processed in ${Date.now() - startTime}ms`);
 
@@ -378,6 +384,7 @@ export async function refreshDownloadLink(cacheKey, id, pwd, env, retryCount = 0
     } catch (error) {
         console.error(`Error refreshing download link for ${cacheKey}:`, error);
         // 出错时也更新刷新时间，避免持续尝试失败的刷新
+        await updateRefreshTime(cacheKey, env);
         // 分析错误类型并获取相应的重试配置
         const errorType = analyzeError(error);
         const retryConfig = getRetryConfig(errorType, BASE_RETRY_CONFIG);

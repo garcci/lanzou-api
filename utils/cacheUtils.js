@@ -61,6 +61,39 @@ function getAccessFrequencyScore(cacheData) {
     return Math.max(0, 100 - ageInMinutes);
 }
 
+// 确定缓存项的存储策略
+function getStorageStrategy(url, accessCount = 0) {
+    // 判断是否为可缓存的文件类型
+    const isCacheable = isCacheableFileType(url);
+    
+    // 根据访问频率确定存储层级
+    if (accessCount > 100) {
+        // 高频访问：使用内存+KV+D1三级缓存
+        return { 
+            memory: true, 
+            kv: isCacheable, 
+            d1: true,
+            priority: 'high'
+        };
+    } else if (accessCount > 10) {
+        // 中频访问：使用内存+D1缓存
+        return { 
+            memory: true, 
+            kv: false, 
+            d1: true,
+            priority: 'medium'
+        };
+    } else {
+        // 低频访问：仅使用D1缓存
+        return { 
+            memory: false, 
+            kv: false, 
+            d1: true,
+            priority: 'low'
+        };
+    }
+}
+
 // 确定缓存项的刷新优先级
 export function getRefreshPriority(cacheKey, cacheData, env) {
     if (!cacheData) return 0;
@@ -178,14 +211,21 @@ export async function setCacheData(cacheKey, data, env) {
             ...data,
             _time: {
                 refresh: timeConfig.refresh
-            }
+            },
+            // 添加访问计数器
+            accessCount: (data.accessCount || 0) + 1
         };
 
-        // 存储到内存缓存
-        memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
+        // 确定存储策略
+        const strategy = getStorageStrategy(data.url, cacheData.accessCount);
 
-        // 存储到D1数据库（第三级缓存）
-        if (env.DB) {
+        // 存储到内存缓存（如果策略允许）
+        if (strategy.memory) {
+            memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
+        }
+
+        // 存储到D1数据库（如果策略允许）
+        if (strategy.d1 && env.DB) {
             try {
                 await setD1CacheData(cacheKey, cacheData, env);
             } catch (error) {
@@ -193,31 +233,27 @@ export async function setCacheData(cacheKey, data, env) {
             }
         }
 
-        // 兼容 Cloudflare KV 和本地模拟的 KV
-        if (typeof env.DOWNLOAD_CACHE.put === 'function') {
+        // 存储到KV（如果策略允许且为可缓存文件类型）
+        if (strategy.kv && typeof env.DOWNLOAD_CACHE.put === 'function') {
             try {
-                // 只有当数据是可缓存的文件类型时才写入KV
-                if (data && data.url && isCacheableFileType(data.url)) {
-                    // 检查是否允许写入（控制写入频率）
-                    const lastWriteTime = await getLastWriteTime(env);
-                    const now = Date.now();
-                    
-                    // 如果距离上次写入时间足够长，则执行写入
-                    if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL) {
-                        // 将对象序列化为 JSON 字符串后再存储
-                        await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
-                        // 更新最后一次写入时间
-                        await updateLastWriteTime(env, now);
-                    } else {
-                        console.log(`Skipping KV write for ${cacheKey} due to throttling`);
-                    }
+                // 检查是否允许写入（控制写入频率）
+                const lastWriteTime = await getLastWriteTime(env);
+                const now = Date.now();
+                
+                // 如果距离上次写入时间足够长，则执行写入
+                if ((now - lastWriteTime) >= WRITE_THROTTLE_INTERVAL) {
+                    // 将对象序列化为 JSON 字符串后再存储
+                    await env.DOWNLOAD_CACHE.put(cacheKey, JSON.stringify(cacheData));
+                    // 更新最后一次写入时间
+                    await updateLastWriteTime(env, now);
                 } else {
-                    console.log(`Skipping KV write for ${cacheKey} - not cacheable file type`);
+                    console.log(`Skipping KV write for ${cacheKey} due to throttling`);
                 }
             } catch (error) {
                 console.error(`Error storing cache data for ${cacheKey}:`, error);
             }
         }
+        
         return timeConfig;
     }
     return null;
@@ -267,14 +303,21 @@ export async function batchSetCacheData(cacheDataMap, env) {
                     ...data,
                     _time: {
                         refresh: timeConfig.refresh
-                    }
+                    },
+                    // 添加访问计数器
+                    accessCount: (data.accessCount || 0) + 1
                 };
                 
-                // 存储到内存缓存
-                memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
+                // 确定存储策略
+                const strategy = getStorageStrategy(data.url, cacheData.accessCount);
                 
-                // 存储到D1数据库（第三级缓存）
-                if (env.DB) {
+                // 存储到内存缓存（如果策略允许）
+                if (strategy.memory) {
+                    memoryCache.set(cacheKey, cacheData, MEMORY_CACHE_TTL);
+                }
+                
+                // 存储到D1数据库（如果策略允许）
+                if (strategy.d1 && env.DB) {
                     try {
                         await setD1CacheData(cacheKey, cacheData, env);
                     } catch (error) {
@@ -282,8 +325,8 @@ export async function batchSetCacheData(cacheDataMap, env) {
                     }
                 }
                 
-                // 存储到KV - 只有当数据是可缓存的文件类型时才写入KV
-                if (typeof env.DOWNLOAD_CACHE.put === 'function' && data && data.url && isCacheableFileType(data.url)) {
+                // 存储到KV（如果策略允许且为可缓存文件类型）
+                if (strategy.kv && typeof env.DOWNLOAD_CACHE.put === 'function' && data && data.url && isCacheableFileType(data.url)) {
                     // 检查是否允许写入（控制写入频率）
                     const lastWriteTime = await getLastWriteTime(env);
                     const now = Date.now();
