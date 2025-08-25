@@ -211,6 +211,42 @@ Docker 环境支持通过 Node.js Inspector 进行调试：
 
 注意：由于 Cloudflare Workers 的特殊运行环境，某些调试功能可能有限。
 
+## API 端点
+
+1. `/:id/:pwd` - 获取蓝奏云文件的直链
+2. `/health` - 健康检查端点
+3. `/refresh` - 手动触发缓存刷新
+4. `/admin` - 管理面板（查看缓存统计和清除缓存）
+5. `/view/:id/:pwd` - 文件预览端点（内联显示图片、PDF等）
+6. `/analyze-html` - HTML 内容分析端点（使用 HTMLRewriter 解析 HTML）
+
+## 使用的 Cloudflare Workers 特性
+
+1. **HTMLRewriter** - 用于解析和转换 HTML 内容
+   - 在管理面板中用于动态生成 HTML 页面
+   - 在文件解析过程中用于提取页面信息
+   - 在 HTML 分析端点中用于提取标题和链接
+
+2. **D1 Database** - SQLite 兼容的数据库
+   - 用于持久化存储缓存数据
+   - 自动创建和维护 cache 表结构
+   - 支持 SQL 查询和数据操作
+
+3. **KV Storage** - 分布式键值存储
+   - 作为缓存的后备存储层
+   - 提供高可用性和全球分布
+
+4. **Caching API** - Cloudflare 边缘缓存
+   - 利用 Cloudflare 的全球网络加速内容分发
+   - 减少源服务器负载
+
+5. **Scheduled Events** - 定时任务
+   - 自动刷新即将过期的链接
+   - 定期清理过期缓存
+
+6. **Forms Handling** - 表单处理
+   - 在管理面板中处理缓存清除请求
+
 ## 部署
 
 ```bash
