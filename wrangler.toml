@@ -11,6 +11,10 @@ command = ""
 # URGENT_THRESHOLD = "180000"  # 3分钟 (毫秒)
 # MAX_KEYS_TO_PROCESS = "50"
 
+[dev]
+ip = "0.0.0.0"
+port = 8787
+
 [triggers]
 crons = ["*/10 * * * *"] # 每10分钟执行一次，与链接有效期匹配
 

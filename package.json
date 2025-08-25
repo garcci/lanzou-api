@@ -5,7 +5,11 @@
   "main": "worker.js",
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "dev:local": "wrangler dev --port=8787 --ip=0.0.0.0",
+    "dev:docker": "docker-compose up --build",
+    "dev:docker:debug": "docker-compose up --build worker",
+    "dev:container": "docker run -it --rm -p 8787:8787 -v $(pwd):/workspace node:20-bullseye bash -c \"cd /workspace && npm install && npm run dev\""
   },
   "dependencies": {},
   "devDependencies": {

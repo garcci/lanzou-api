@@ -1,0 +1,29 @@
+{
+  "name": "lanzou-api-devcontainer",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "forwardPorts": [8787, 9229],
+  "portsAttributes": {
+    "8787": {
+      "label": "Application",
+      "onAutoForward": "openPreview"
+    },
+    "9229": {
+      "label": "Node.js Inspector"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.vscode-json",
+        "cloudflare.vscode-cloudflare-workers"
+      ]
+    }
+  },
+  "postCreateCommand": "npm install",
+  "remoteUser": "node"
+}

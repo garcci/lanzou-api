@@ -5,8 +5,16 @@ services:
     build: .
     ports:
       - "8787:8787"
+      - "9229:9229"  # Node.js Inspector 端口
     volumes:
       - .:/app
       - /app/node_modules
     environment:
       - NODE_ENV=development
+      # Cloudflare Wrangler 需要的环境变量
+      - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
+      - CF_API_TOKEN=${CF_API_TOKEN}
+    # 添加 init 以更好地处理信号
+    init: true
+    # 启用特权模式以支持调试
+    privileged: true

@@ -20,14 +20,14 @@ class SignExtractor {
             if (signMatch) {
                 this.sign = signMatch[1];
             }
-            
+
             // 查找所有sign值
             const allSignMatches = text.match(/'sign':'([^']+)'/g);
             if (allSignMatches) {
                 this.signs = allSignMatches.map(match => match.match(/'sign':'([^']+)'/)[1]);
             }
         }
-        
+
         // 提取ajaxm.php链接中的fileId
         if (element.tagName === 'a' || element.tagName === 'iframe') {
             const src = element.getAttribute('src');
@@ -70,20 +70,20 @@ class WpSignExtractor {
         // 提取script标签中的wp_sign和ajaxdata
         if (element.tagName === 'script') {
             const text = element.text;
-            
+
             // 查找wp_sign
             const wpSignMatch = text.match(/wp_sign\s*=\s*'([^']+)'/);
             if (wpSignMatch) {
                 this.wpSign = wpSignMatch[1];
             }
-            
+
             // 查找ajaxdata
             const ajaxDataMatch = text.match(/ajaxdata\s*=\s*'([^']+)'/);
             if (ajaxDataMatch) {
                 this.ajaxData = ajaxDataMatch[1];
             }
         }
-        
+
         // 提取ajaxm.php链接中的fileId
         if (element.tagName === 'a' || element.tagName === 'iframe') {
             const src = element.getAttribute('src');
@@ -120,8 +120,9 @@ export async function extractSignAndFileId(fileId, retryCount = 0) {
         try {
             const extractor = new SignExtractor();
             const rewriter = new HTMLRewriter().on('script', extractor).on('iframe', extractor);
+            console.info(rewriter);
             rewriter.transform(response.clone());
-            
+
             if (extractor.sign && extractor.fileId) {
                 return {
                     fileId: extractor.fileId,
@@ -187,7 +188,7 @@ export async function extractSignAndFileId(fileId, retryCount = 0) {
                             .on('iframe', wpExtractor)
                             .on('a', wpExtractor);
                         rewriter.transform(fnResponse.clone());
-                        
+
                         if (wpExtractor.wpSign && wpExtractor.ajaxData && wpExtractor.fileId) {
                             const postData = {
                                 action: "downprocess",
