@@ -151,8 +151,8 @@ const worker = {
 
             // 处理下载请求
             if (id) {
-                // 降低触发刷新的概率以避免过于频繁的刷新
-                if (ctx && ctx.waitUntil && Math.random() < 0.05) {  // 5%的概率触发刷新
+                // 提高触发刷新的概率以确保更多请求能够触发缓存刷新
+                if (ctx && ctx.waitUntil && Math.random() < 0.2) {  // 20%的概率触发刷新
                     console.log(`Triggering refresh task for request: ${id}`);
                     ctx.waitUntil(checkAndRefreshLinks(env));
                 }

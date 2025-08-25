@@ -7,12 +7,12 @@ command = ""
 
 [vars]
 # BATCH_SIZE = "5"  # 批处理大小，用于控制批量操作的批次大小
-# REFRESH_INTERVAL = "720000"  # 12分钟 (毫秒)
+# REFRESH_INTERVAL = "600000"  # 10分钟 (毫秒)
 # URGENT_THRESHOLD = "180000"  # 3分钟 (毫秒)
 # MAX_KEYS_TO_PROCESS = "50"
 
 [triggers]
-crons = ["*/12 * * * *"] # 每12分钟执行一次，与链接有效期匹配
+crons = ["*/10 * * * *"] # 每10分钟执行一次，与链接有效期匹配
 
 # 配置自定义域名，只启用 dir.gjqqq.com
 [[routes]]
